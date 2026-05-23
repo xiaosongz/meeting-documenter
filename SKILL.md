@@ -30,18 +30,24 @@ End-to-end meeting documentation: audio compression, transcription, structured s
 
 ## Configuration
 
-The skill expects a PARA-style Obsidian vault and the following layout. Override via environment variables if your vault is structured differently:
+The skill writes into the directories listed below. Defaults are neutral folder names — override via environment variables to match your vault layout (PARA, Johnny.Decimal, custom, etc.):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `VAULT_PATH` | (required) | Vault root |
-| `MEETING_NOTES_DIR` | `${VAULT_PATH}/50_RESOURCES/Professional/MeetingNotes` | Where summaries live |
+| `MEETING_NOTES_DIR` | `${VAULT_PATH}/MeetingNotes` | Where summaries live |
 | `MEETING_RAW_DIR` | `${MEETING_NOTES_DIR}/raw` | Transcripts |
 | `MEETING_RECORDINGS_DIR` | `${MEETING_NOTES_DIR}/recordings` | Archived OGG audio |
-| `DAILY_NOTES_DIR` | `${VAULT_PATH}/20_DAILY` | Date-organized daily notes |
-| `PROJECTS_DIR` | `${VAULT_PATH}/30_PROJECTS/Active` | Active projects with `Dashboard.md` |
+| `DAILY_NOTES_DIR` | `${VAULT_PATH}/DailyNotes` | Date-organized daily notes |
+| `PROJECTS_DIR` | `${VAULT_PATH}/Projects` | Active projects with `Dashboard.md` |
 | `MEETING_AUDIO_BACKUP_DIR` | `$HOME/audio-backups/meetings` | Original recordings (post-archive) |
-| `GOOGLE_API_KEY` | (required) | Gemini API key — set in `.env` |
+| `GOOGLE_API_KEY` | (required) | Gemini API key — set in `.env`. `GEMINI_API_KEY` also accepted. |
+
+The skill reads two YAML registries from `references/`:
+- `KNOWN_SPEAKERS.yaml` — your team's speaker registry (copy from `KNOWN_SPEAKERS.template.yaml` and edit)
+- `PROJECT_KEYWORDS.yaml` — your project keyword map (copy from `PROJECT_KEYWORDS.template.yaml` and edit)
+
+Both runtime `.yaml` files are gitignored to prevent accidental commits of real names/emails/project codenames. If they're missing at runtime, Step 0b falls back to asking the user for every name, and Step 3 asks for the project directly.
 
 ## Pipeline Overview
 
@@ -269,7 +275,7 @@ rm -f /tmp/meeting_context.txt
 
 ## Troubleshooting
 
-**GOOGLE_API_KEY not set**: Check `.env` (must set `GOOGLE_API_KEY=...`)
+**GOOGLE_API_KEY not set**: Check `.env` (must set `GOOGLE_API_KEY=...` or `GEMINI_API_KEY=...`)
 
 **Python venv broken**: Delete `.venv` and re-run `transcribe.sh` (auto-recreates with uv)
 

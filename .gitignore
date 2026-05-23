@@ -3,6 +3,11 @@
 .env.*
 !.env.example
 
+# User-edited registries — copy from .template.yaml and edit locally
+# These contain real names, emails, project codenames — must never be committed
+references/KNOWN_SPEAKERS.yaml
+references/PROJECT_KEYWORDS.yaml
+
 # Python
 .venv/
 __pycache__/

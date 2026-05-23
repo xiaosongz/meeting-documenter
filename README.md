@@ -18,7 +18,7 @@ Given an audio file (MP3 / WAV / OGG / M4A / FLAC / WebM / AAC), the skill:
 ## Requirements
 
 - [Claude Code](https://claude.com/claude-code) CLI
-- An Obsidian vault (default paths assume a PARA-style layout, but everything is configurable via env vars)
+- An Obsidian vault (default paths use neutral folder names — override via env vars to match any layout)
 - `ffmpeg` and `ffprobe` on `$PATH`
 - [`uv`](https://github.com/astral-sh/uv) (Python package manager — bootstraps the venv automatically)
 - A [Google AI Studio](https://aistudio.google.com/apikey) API key for Gemini
@@ -28,18 +28,22 @@ Given an audio file (MP3 / WAV / OGG / M4A / FLAC / WebM / AAC), the skill:
 ```bash
 # 1. Clone into your vault's skills directory
 cd /path/to/your/vault
-git clone https://github.com/<you>/meeting-documenter .claude/skills/meeting-documenter
+git clone https://github.com/xiaosongz/meeting-documenter .claude/skills/meeting-documenter
+cd .claude/skills/meeting-documenter
 
-# 2. Configure the API key
-cp .claude/skills/meeting-documenter/.env.example .claude/skills/meeting-documenter/.env
-$EDITOR .claude/skills/meeting-documenter/.env   # paste GOOGLE_API_KEY
+# 2. Configure the API key + vault path
+cp .env.example .env
+$EDITOR .env   # set GOOGLE_API_KEY and VAULT_PATH
 
-# 3. Make sure .env is gitignored in your vault repo
-echo '.env' >> .gitignore
+# 3. Ensure .env is gitignored in your vault repo (the skill's .gitignore already covers itself)
+echo '.claude/skills/meeting-documenter/.env' >> /path/to/your/vault/.gitignore
 
-# 4. Fill in your team's data
-$EDITOR .claude/skills/meeting-documenter/references/KNOWN_SPEAKERS.yaml
-$EDITOR .claude/skills/meeting-documenter/references/PROJECT_KEYWORDS.yaml
+# 4. Copy the registry templates and fill in your team's data.
+#    The .yaml versions are gitignored — only the .template.yaml versions ship publicly.
+cp references/KNOWN_SPEAKERS.template.yaml references/KNOWN_SPEAKERS.yaml
+cp references/PROJECT_KEYWORDS.template.yaml references/PROJECT_KEYWORDS.yaml
+$EDITOR references/KNOWN_SPEAKERS.yaml
+$EDITOR references/PROJECT_KEYWORDS.yaml
 ```
 
 ## Use
@@ -63,15 +67,15 @@ Override defaults via environment variables (e.g., in your shell config or a pro
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `VAULT_PATH` | (required) | Vault root |
-| `MEETING_NOTES_DIR` | `${VAULT_PATH}/50_RESOURCES/Professional/MeetingNotes` | Summaries |
+| `MEETING_NOTES_DIR` | `${VAULT_PATH}/MeetingNotes` | Summaries |
 | `MEETING_RAW_DIR` | `${MEETING_NOTES_DIR}/raw` | Transcripts |
 | `MEETING_RECORDINGS_DIR` | `${MEETING_NOTES_DIR}/recordings` | OGG archives |
-| `DAILY_NOTES_DIR` | `${VAULT_PATH}/20_DAILY` | Daily notes (year/month subdirs) |
-| `PROJECTS_DIR` | `${VAULT_PATH}/30_PROJECTS/Active` | Active projects with `Dashboard.md` |
+| `DAILY_NOTES_DIR` | `${VAULT_PATH}/DailyNotes` | Daily notes (year/month subdirs) |
+| `PROJECTS_DIR` | `${VAULT_PATH}/Projects` | Active projects with `Dashboard.md` |
 | `MEETING_AUDIO_BACKUP_DIR` | `$HOME/audio-backups/meetings` | Original recordings (post-archive) |
-| `GOOGLE_API_KEY` | (required) | Gemini API key |
+| `GOOGLE_API_KEY` | (required) | Gemini API key. `GEMINI_API_KEY` also accepted. |
 
-If your vault doesn't use the PARA layout above, the skill still works — point each path env var wherever you actually keep that content.
+Defaults use neutral folder names. If your vault uses PARA, Johnny.Decimal, or any other layout, point each path env var at the matching directory.
 
 ## Repository layout
 
@@ -85,12 +89,12 @@ If your vault doesn't use the PARA layout above, the skill still works — point
 │   ├── split-audio.sh                # Silence-aware splitter for long audio
 │   └── cleanup-source-audio.sh       # Verify archive, backup original, clean vault root
 ├── references/
-│   ├── SUMMARY_FORMAT.md             # Output spec for summaries
-│   ├── QUALITY_CHECKLIST.md          # Verification checklist (Step 7)
-│   ├── WORKFLOW_DETAILS.md           # Edge cases + fast-paths
-│   ├── CONTEXT_TEMPLATE.md           # Speaker diarization context template
-│   ├── KNOWN_SPEAKERS.yaml           # ← Edit me: your team's speaker registry
-│   └── PROJECT_KEYWORDS.yaml         # ← Edit me: your project keyword map
+│   ├── SUMMARY_FORMAT.md                  # Output spec for summaries
+│   ├── QUALITY_CHECKLIST.md               # Verification checklist (Step 7)
+│   ├── WORKFLOW_DETAILS.md                # Edge cases + fast-paths
+│   ├── CONTEXT_TEMPLATE.md                # Speaker diarization context template
+│   ├── KNOWN_SPEAKERS.template.yaml       # Template — copy to KNOWN_SPEAKERS.yaml (gitignored) and edit
+│   └── PROJECT_KEYWORDS.template.yaml     # Template — copy to PROJECT_KEYWORDS.yaml (gitignored) and edit
 ├── .env.example
 ├── .gitignore
 └── LICENSE
@@ -109,8 +113,8 @@ Claude summarization runs inside your existing Claude Code subscription.
 
 ## Security
 
-- **Never commit `.env`** — it's already in `.gitignore`. If you accidentally do, rotate the key.
-- **`references/KNOWN_SPEAKERS.yaml` contains real names and emails for your team.** Do NOT commit it to a public fork of this repo. Consider adding it to your local `.gitignore` and shipping only the template.
+- **`.env`** — already in `.gitignore`. If you accidentally commit it, rotate the key.
+- **`references/KNOWN_SPEAKERS.yaml` and `references/PROJECT_KEYWORDS.yaml`** contain real names, emails, and project codenames once you fill them in. Both are already in this repo's `.gitignore` so they cannot be pushed to a fork. Only the `.template.yaml` versions are tracked. If you migrate to a different setup, audit any backup of these files before sharing.
 
 ## Customization
 
