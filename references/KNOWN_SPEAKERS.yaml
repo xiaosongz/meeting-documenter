@@ -1,0 +1,59 @@
+# Known Speakers Registry — TEMPLATE
+#
+# Maps canonical names to aliases, roles, and team affiliations.
+# Used in Step 0b to resolve raw names from user input or AI-extracted attendee lists
+# into canonical names + wikilinks before they propagate through the pipeline.
+#
+# Format:
+#   canonical_name: The name to use in all outputs (context file, summary, action items)
+#   aliases:        Alternative spellings, nicknames, transliterations,
+#                   or AI-misheard variants that should resolve to this name
+#   role:           Professional role (used in context file for Gemini diarization)
+#   teams:          Team/project affiliations (helps with auto-matching)
+#   wikilink:       Preferred Obsidian wikilink format for the attendees field
+#   notes:          Optional free-text — email, institution, context
+#
+# Matching rules:
+#   1. Case-insensitive exact match on canonical_name OR any alias
+#   2. If no match found, flag as new speaker and ask user
+#   3. NEVER silently accept an unmatched name — always confirm
+#
+# Maintenance:
+#   After each meeting with new attendees, add them here.
+#   When correcting a misspelling, add the wrong spelling as an alias
+#   so the same mistake gets caught next time.
+#
+# ─── REPLACE THE EXAMPLES BELOW WITH YOUR OWN TEAM ──────────────────────────
+# Do NOT commit real names + emails to a public repo.
+
+speakers:
+
+  # ─── Example: PI / Team Lead ───
+  - canonical_name: Alice Example
+    aliases: [Alice, A. Example, Allice]
+    role: Principal Investigator
+    teams: [PROJECT_ALPHA, PROJECT_BRAVO]
+    wikilink: "[[Alice Example]]"
+    notes: "alice@example.org"
+
+  # ─── Example: Analyst with many alias variants ───
+  - canonical_name: Bob Sample
+    aliases: [Bob, B. Sample, Bobby, Bobb]
+    role: Data Analyst
+    teams: [PROJECT_ALPHA]
+    wikilink: "[[Bob Sample]]"
+
+  # ─── Example: Non-English name with transliteration aliases ───
+  - canonical_name: Chen Wei
+    aliases: [Wei Chen, 陈伟, "陈伟 (Chen Wei)", Chenwei]
+    role: Researcher
+    teams: [PROJECT_BRAVO]
+    wikilink: "[[Chen Wei]]"
+
+  # ─── Example: External collaborator ───
+  - canonical_name: Dr. Dana External
+    aliases: [Dana, Dr. External, External]
+    role: External Collaborator
+    teams: [PROJECT_BRAVO]
+    wikilink: "[[Dr. Dana External]]"
+    notes: "dana@partner-institution.example"

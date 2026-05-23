@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Backups
+*.bak
+backups/
+
+# OS
+.DS_Store
+
+# Audio (in case someone tests locally)
+*.m4a
+*.mp3
+*.wav
+*.ogg
+*.flac
+*.aac
+*.webm

@@ -1,0 +1,34 @@
+# Project keyword mappings for auto-detection — TEMPLATE
+#
+# Format: ProjectFolderName: [keywords...]
+#
+# Usage: When analyzing a meeting transcript, the skill matches keywords
+# (case-insensitive) to suggest the most relevant project folder.
+#
+# Priority: More specific keywords (e.g., a unique project codename) should
+# come before generic ones (e.g., "survey"). The skill confirms with the user
+# in all cases, so ordering only affects the suggested default.
+#
+# ─── REPLACE THE EXAMPLES BELOW WITH YOUR OWN PROJECTS ──────────────────────
+
+PROJECT_ALPHA:
+  - project alpha
+  - alpha study
+  - alpha-cohort
+  # Add unique keywords your team uses for this project
+
+PROJECT_BRAVO:
+  - project bravo
+  - bravo trial
+  - bravo intervention
+
+PROJECT_CHARLIE:
+  - project charlie
+  - charlie pipeline
+  - charlie dashboard
+
+# Generic team/meeting keywords (lower priority, prefix with _)
+_TEAM_OPS:
+  - team ops
+  - standup
+  - retrospective
