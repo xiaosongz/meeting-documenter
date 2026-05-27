@@ -33,6 +33,9 @@ Probe these in order. Treat the first list as blockers; the second as adapters; 
 | `DAILY_NOTES_DIR` | Daily notes root | Skip Step 5 if unset |
 | `PROJECTS_DIR` | Project folders root | Skip Step 6 if unset |
 | `MEETING_AUDIO_BACKUP_DIR` | Original audio backup | Defaults `$HOME/audio-backups/meetings` |
+| `DAILY_NOTE_PATH_FORMAT` | strftime template for daily-note path | Defaults `%Y/%m-%B/%Y-%m-%d.md` |
+| `PROJECT_MEETING_SUBDIR` | Per-project reference-note subdir | Defaults `Meeting`; empty = project root |
+| `LINK_STYLE` | Output link form (`wikilink`/`markdown`/`plain`) | Defaults `wikilink` |
 | `references/KNOWN_SPEAKERS.yaml` populated | Speaker resolution | Skip Step 0b if file absent or empty |
 | `references/PROJECT_KEYWORDS.yaml` populated | Project detection | Skip Step 3 keyword matching if absent |
 
@@ -42,12 +45,13 @@ Each one may or may not fit the user's setup. Flag mismatches in diagnostic mode
 
 | Convention | Where it appears | Adapter strategy |
 |---|---|---|
-| Daily note path = `YYYY/MM-MonthName/YYYY-MM-DD.md` | Step 5 | Detect actual format; document mismatch |
+| Daily note path format | Step 5 | Detect actual format; set `DAILY_NOTE_PATH_FORMAT` in `.env` |
 | Daily note has `## Meetings` section + table | Step 5 | Detect heading; offer to add it if missing |
 | Daily note may have `## Carryover` section | Step 5 cross-ref | Soft check, skip cleanly if absent |
 | | | **Carryover section definition:** a `## Carryover` Markdown heading followed by a checklist of unfinished tasks rolled over from previous days. Format: `- [ ] task description`. See `WORKFLOW_DETAILS.md § Step 5b` for how the skill cross-references it. |
-| Wikilink syntax `[[Name]]` | Steps 4, 5, 6 | If user is on plain Markdown / Notion / Bear, warn and offer to swap to `[Name](path)` |
-| Project layout `${PROJECTS_DIR}/{Name}/Dashboard.md` + `Meeting/` subdir | Step 6 | Detect alternative layouts (flat, by-date, notes/); set `PROJECT_MEETING_SUBDIR` or skip |
+| Link form (`[[Name]]` vs `[Name](path)` vs bare) | Steps 4, 5, 6 | Detect majority; set `LINK_STYLE` in `.env` |
+| Per-project reference-note subdir | Step 6 | Detect actual subdir name; set `PROJECT_MEETING_SUBDIR` in `.env` (empty = project root) |
+| Project root has `Dashboard.md` | Step 6 | Soft check, Dashboard update skipped if absent |
 | Frontmatter taxonomy `meeting_outcome: decision\|update\|planning\|blocked\|cancelled` | Step 4 | If user prefers other taxonomy, edit `references/SUMMARY_FORMAT.md` |
 | Markdown notes (UTF-8 `.md` files) | All steps | Notion/Bear/Logseq users: warn — skill writes `.md` directly to filesystem |
 
@@ -163,13 +167,13 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 
 3. **Resolve conventions.** For each mismatch flagged in diagnostic:
 
-   - **Daily note path format.** Ask user for their actual format string (e.g., `%Y-%m-%d.md`, `%Y/%m-%B/%Y-%m-%d.md`, `Journal/%Y/%Y-%m-%d.md`). Add `DAILY_NOTE_PATH_FORMAT=...` to `.env`. Note: the current SKILL.md hardcodes one format; until that's parameterized, surface the mismatch as a known limitation and tell the user to edit Step 5 in their local copy of `SKILL.md`.
+   - **Daily note path format.** Ask user for their actual format string (e.g., `%Y-%m-%d.md`, `%Y/%m-%B/%Y-%m-%d.md`, `Journal/%Y/%Y-%m-%d.md`). Add `DAILY_NOTE_PATH_FORMAT="..."` to `.env`. The skill reads this var in Step 5 — no SKILL.md edit needed.
 
    - **`## Meetings` section missing.** Ask: "Add `## Meetings` (with empty table header) to your existing daily-note template?" If yes, find the template file (`templates/Daily.md`, `_templates/daily-note.md`, etc.) or ask user where it lives. Patch the template; do not retro-edit historical daily notes.
 
-   - **Link style mismatch.** If majority is `markdown` not `wikilink`, warn user that the current skill emits wikilinks. Offer two paths: (a) edit `references/SUMMARY_FORMAT.md` to use markdown links, (b) accept wikilinks and run notes through a converter later. Do not auto-edit `SUMMARY_FORMAT.md` without confirmation.
+   - **Link style mismatch.** Determine the user's preferred form (`wikilink` / `markdown` / `plain`) — default to the majority detected in diagnostic, or ask if mixed. Add `LINK_STYLE="..."` to `.env`. The skill reads this var in Steps 4-6 and `SUMMARY_FORMAT.md § Link Styles` provides the substitution table.
 
-   - **Project layout mismatch.** If projects dir uses different subfolder names (e.g. `Notes/` not `Meeting/`), ask for the actual subdir name. Add `PROJECT_MEETING_SUBDIR=Notes` to `.env`. Same caveat: until SKILL.md is parameterized, surface as known limitation.
+   - **Project layout mismatch.** If projects dir uses different subfolder names (e.g. `Notes/` not `Meeting/`), ask for the actual subdir name. Add `PROJECT_MEETING_SUBDIR="Notes"` to `.env`. Set to `""` (empty string) to put reference notes directly into the project root. The skill reads this var in Step 6.
 
 4. **Populate registries.**
    - Copy `references/KNOWN_SPEAKERS.template.yaml` → `references/KNOWN_SPEAKERS.yaml` if absent.
@@ -178,13 +182,19 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
    - List subdirectories of `${PROJECTS_DIR}`. For each, ask the user: "Should this project be auto-detected from meeting transcripts? If yes, what 2–3 keywords or aliases should match it?"
    - Both registry files must stay gitignored. Confirm `.gitignore` covers them before writing.
 
-5. **Write `.env`.** Show the assembled `.env` to the user for review. Then write it to `${SKILL_DIR}/.env`. Verify it is gitignored.
+5. **Write `.env`.** Show the assembled `.env` to the user for review. Test whether `${SKILL_DIR}` is writable (`test -w "${SKILL_DIR}"`):
+   - **Writable:** write to `${SKILL_DIR}/.env` and verify the path is gitignored.
+   - **Not writable** (read-only mount, shared install, multi-user host): ask the user for an external path (e.g., `$HOME/.config/meeting-documenter/.env`). Write `.env` there, then emit a shell-export snippet for the user to add to their `~/.zshrc` or `~/.bashrc`:
+     ```bash
+     export MEETING_DOCUMENTER_ENV_FILE="<chosen external path>"
+     ```
+     Both `scripts/transcribe.sh` and the SKILL.md detection check honor this override.
 
 6. **Final report.** List:
    - `.env` written: <path>
    - `KNOWN_SPEAKERS.yaml`: <N entries>
    - `PROJECT_KEYWORDS.yaml`: <N entries>
-   - Outstanding limitations the user must work around in their copy of `SKILL.md` (if any)
+   - Convention env vars resolved (`DAILY_NOTE_PATH_FORMAT`, `PROJECT_MEETING_SUBDIR`, `LINK_STYLE`)
    - Next step: "Try `transcribe.sh path/to/test.mp3` to confirm the pipeline runs end-to-end."
 
 ---

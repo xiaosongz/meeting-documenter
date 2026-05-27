@@ -26,8 +26,11 @@ if ! "${VENV_DIR}/bin/python3" -c "import google.genai" 2>/dev/null; then
 fi
 
 # 3. Load API key (.env must set GOOGLE_API_KEY=...)
-if [[ -f "${SKILL_DIR}/.env" ]]; then
-  set -a; source "${SKILL_DIR}/.env"; set +a
+# Allow override: MEETING_DOCUMENTER_ENV_FILE=/path/to/.env supports shared installs,
+# read-only mounts, multi-user hosts. Default is ${SKILL_DIR}/.env.
+ENV_FILE="${MEETING_DOCUMENTER_ENV_FILE:-${SKILL_DIR}/.env}"
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a; source "${ENV_FILE}"; set +a
 fi
 
 # 4. Delegate to Python pipeline

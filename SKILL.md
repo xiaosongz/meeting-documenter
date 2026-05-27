@@ -48,10 +48,11 @@ If `.env` or the registry `.yaml` files are missing the first time this skill is
 Detection check (run before Step 0):
 
 ```bash
-test -f "${SKILL_DIR}/.env" && test -f "${SKILL_DIR}/references/KNOWN_SPEAKERS.yaml"
+ENV_FILE="${MEETING_DOCUMENTER_ENV_FILE:-${SKILL_DIR}/.env}"
+test -f "${ENV_FILE}" && test -f "${SKILL_DIR}/references/KNOWN_SPEAKERS.yaml"
 ```
 
-If either file is missing, do not proceed — point the user at `references/ONBOARDING_PROMPT.md` and exit.
+If either file is missing, do not proceed — point the user at `references/ONBOARDING_PROMPT.md` and exit. `MEETING_DOCUMENTER_ENV_FILE` lets users keep `.env` outside the skill repo (e.g., shared install, read-only mount, multi-user host).
 
 ## Configuration
 
@@ -66,6 +67,9 @@ The skill writes into the directories listed below. Defaults are neutral folder 
 | `DAILY_NOTES_DIR` | `${VAULT_PATH}/DailyNotes` | Date-organized daily notes |
 | `PROJECTS_DIR` | `${VAULT_PATH}/Projects` | Active projects with `Dashboard.md` |
 | `MEETING_AUDIO_BACKUP_DIR` | `$HOME/audio-backups/meetings` | Original recordings (post-archive) |
+| `DAILY_NOTE_PATH_FORMAT` | `%Y/%m-%B/%Y-%m-%d.md` | strftime template relative to `DAILY_NOTES_DIR`. Examples: `%Y-%m-%d.md` (flat) ・ `Journal/%Y/%Y-%m-%d.md` (Journal subdir) |
+| `PROJECT_MEETING_SUBDIR` | `Meeting` | Subdirectory under each `${PROJECTS_DIR}/{Name}/` for per-project reference notes. Empty string `""` writes refs directly into project root. |
+| `LINK_STYLE` | `wikilink` | One of `wikilink` (Obsidian `[[Name]]`), `markdown` (`[Name](path)`), or `plain` (bare `Name`, no link). Drives attendee/transcript/recording link form in Steps 4-6 + `references/SUMMARY_FORMAT.md`. |
 | `GOOGLE_API_KEY` | (required) | Gemini API key — set in `.env`. `GEMINI_API_KEY` also accepted. |
 
 The skill reads two YAML registries from `references/`:
@@ -195,7 +199,7 @@ After transcription, create a trimmed, compressed recording in the vault as a pe
    - If trimming needed, pre-trim with `ffmpeg -i input -t <trim_seconds> /tmp/trimmed.m4a` then compress the trimmed file
    - Naming convention matches the meeting summary filename but with `.ogg` extension
 2. **Verify**: Check duration and codec of the archived file
-3. **Update transcript** frontmatter `source:` field to wikilink the archived recording
+3. **Update transcript** frontmatter `source:` field to link the archived recording (form per `LINK_STYLE`)
 4. **Note**: This step runs after Step 3 (title confirmation) since the filename depends on the confirmed title. Listed here for logical grouping with audio steps.
 
 ### Step 3: Detect/Confirm Project
@@ -213,7 +217,7 @@ Read the transcript and generate a structured meeting summary per `references/SU
 
 Key features to include:
 - **`meeting_outcome`** frontmatter field: `decision | update | planning | blocked | cancelled`
-- **Wikilink attendees**: `"[[Name]]"` format in YAML
+- **Attendee link format**: determined by `${LINK_STYLE:-wikilink}`. See `references/SUMMARY_FORMAT.md § Link Styles` for the substitution table — every `[[Name]]` example in that doc resolves to the form set by `LINK_STYLE`.
 - **`[assignee:: Name]`** inline field on all action items
 - **Parking Lot** section for explicitly tabled items (between Action Items and Topics)
 - **`description`** field (~150 chars): capture the meeting's key outcome, not just the topic
@@ -222,11 +226,18 @@ Generate a `description` that answers: "What changed as a result of this meeting
 
 ### Step 5: Update Daily Note
 
-1. Determine daily note path: `${DAILY_NOTES_DIR}/YYYY/MM-MonthName/YYYY-MM-DD.md`
+1. Determine daily note path by joining `${DAILY_NOTES_DIR}` with the strftime-formatted `${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}`:
+   ```bash
+   DAILY_NOTE="${DAILY_NOTES_DIR}/$(date "+${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}")"
+   ```
+   Common formats:
+   - `%Y-%m-%d.md` → flat: `2026-05-27.md`
+   - `%Y/%m-%B/%Y-%m-%d.md` → year/month-name nested (default): `2026/05-May/2026-05-27.md`
+   - `Journal/%Y/%Y-%m-%d.md` → Journal subdir: `Journal/2026/2026-05-27.md`
 2. If daily note does not exist, create it from `${VAULT_PATH}/templates/DailyNote.md` (substituting today's date for `{{date}}`). If that template is also absent, fall back to the Standard skeleton — frontmatter with `date:`, `# <date>` heading, `## Meetings` heading + Standard 4-column table, empty `## Carryover` heading, empty `## Notes` heading. A daily-note skill (e.g., `daily-note-creator`) may be invoked instead if one is available in the user's environment.
 3. Find the `## Meetings` section and its table
 4. **Adapt to the existing table column format** — do not assume specific columns
-5. Add a new row with wikilinks to transcript and summary
+5. Add a new row with links to transcript and summary (form per `LINK_STYLE`)
 6. **Carryover cross-reference**: Scan the daily note's Carryover section for tasks that were addressed in this meeting. Suggest marking them complete or note them in the meeting row.
 7. Verify the edit succeeded by reading the daily note
 
@@ -236,19 +247,19 @@ See `references/WORKFLOW_DETAILS.md` for daily note edge cases (missing section,
 
 When a project was confirmed in Step 3:
 
-1. Ensure `${PROJECTS_DIR}/{Project}/Meeting/` folder exists (`mkdir -p` if needed)
-2. Create a reference note: `Meeting/YYYY-MM-DD-HHMM Title.md` containing:
-   - Frontmatter with source/transcript wikilinks
+1. Let `SUBDIR="${PROJECT_MEETING_SUBDIR-Meeting}"`. Ensure `${PROJECTS_DIR}/{Project}/${SUBDIR}/` folder exists (`mkdir -p` if needed). If `PROJECT_MEETING_SUBDIR` is set to empty string, reference notes go directly into the project root.
+2. Create a reference note at `${SUBDIR}/YYYY-MM-DD-HHMM Title.md` (or project root if `SUBDIR` empty) containing:
+   - Frontmatter with source/transcript links in `${LINK_STYLE:-wikilink}` form (see SUMMARY_FORMAT § Link Styles)
    - Quick reference: executive summary, action items, key decisions
 3. Update project `Dashboard.md`'s Recent Meetings section (if the section exists)
 4. Update the Dashboard's `updated:` frontmatter field to today's date
 5. Verify the reference note via Read
 
-**Multi-project meetings**: When a meeting spans multiple projects, create a project-specific reference note in each project's `Meeting/` folder. Each reference note should contain only that project's decisions and action items, linking back to the full summary. See `references/WORKFLOW_DETAILS.md § Multi-Project Meetings`.
+**Multi-project meetings**: When a meeting spans multiple projects, create a project-specific reference note in each project's `${SUBDIR}/` folder. Each reference note should contain only that project's decisions and action items, linking back to the full summary. See `references/WORKFLOW_DETAILS.md § Multi-Project Meetings`.
 
 ### Step 7: Verify All Links
 
-Read all created files and confirm wikilinks resolve correctly. Run the full verification per `references/QUALITY_CHECKLIST.md`.
+Read all created files and confirm links resolve correctly (per `LINK_STYLE`). Run the full verification per `references/QUALITY_CHECKLIST.md`.
 
 **Do NOT mark the task complete until all applicable checklist items pass.**
 

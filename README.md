@@ -61,6 +61,8 @@ $EDITOR references/PROJECT_KEYWORDS.yaml
 ```
 
 > **First-run side effect:** the first invocation of `scripts/transcribe.sh` (including `--help`) creates a `.venv/` inside this repo via `uv` and installs `google-genai`. The directory is gitignored. Skip the first run if the repo is on a read-only mount.
+>
+> **External `.env`:** set `MEETING_DOCUMENTER_ENV_FILE=/path/to/your.env` to keep `.env` outside the skill repo (useful for read-only mounts, shared installs, multi-user hosts). Both `transcribe.sh` and the SKILL.md detection check honor this override.
 
 ## Use
 
@@ -89,6 +91,9 @@ Override defaults via environment variables (e.g., in your shell config or a pro
 | `DAILY_NOTES_DIR` | `${VAULT_PATH}/DailyNotes` | Daily notes (year/month subdirs) |
 | `PROJECTS_DIR` | `${VAULT_PATH}/Projects` | Active projects with `Dashboard.md` |
 | `MEETING_AUDIO_BACKUP_DIR` | `$HOME/audio-backups/meetings` | Original recordings (post-archive) |
+| `DAILY_NOTE_PATH_FORMAT` | `%Y/%m-%B/%Y-%m-%d.md` | strftime template for daily-note path (relative to `DAILY_NOTES_DIR`). e.g., `%Y-%m-%d.md` for flat. |
+| `PROJECT_MEETING_SUBDIR` | `Meeting` | Subdir under each project for per-project reference notes. Empty = project root. |
+| `LINK_STYLE` | `wikilink` | `wikilink` (Obsidian) / `markdown` / `plain`. Drives attendee + source link form throughout outputs. |
 | `GOOGLE_API_KEY` | (required) | Gemini API key. `GEMINI_API_KEY` also accepted. |
 
 Defaults use neutral folder names. If your vault uses PARA, Johnny.Decimal, or any other layout, point each path env var at the matching directory.
