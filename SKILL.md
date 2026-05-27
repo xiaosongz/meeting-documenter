@@ -48,11 +48,29 @@ If `.env` or the registry `.yaml` files are missing the first time this skill is
 Detection check (run before Step 0):
 
 ```bash
-ENV_FILE="${MEETING_DOCUMENTER_ENV_FILE:-${SKILL_DIR}/.env}"
-test -f "${ENV_FILE}" && test -f "${SKILL_DIR}/references/KNOWN_SPEAKERS.yaml"
+# Bare `-` (not `:-`) so an explicit empty value opts out of file loading.
+ENV_FILE="${MEETING_DOCUMENTER_ENV_FILE-${SKILL_DIR}/.env}"
+test -n "${ENV_FILE}" && test -f "${ENV_FILE}" && test -f "${SKILL_DIR}/references/KNOWN_SPEAKERS.yaml"
 ```
 
 If either file is missing, do not proceed — point the user at `references/ONBOARDING_PROMPT.md` and exit. `MEETING_DOCUMENTER_ENV_FILE` lets users keep `.env` outside the skill repo (e.g., shared install, read-only mount, multi-user host).
+
+## Load runtime env (run before Step 0)
+
+Claude's Bash tool spawns a fresh subshell on every call, so the convention env vars (`DAILY_NOTE_PATH_FORMAT`, `PROJECT_MEETING_SUBDIR`, `LINK_STYLE`, plus all path vars) are not visible in Steps 4-6 unless explicitly loaded. **Source the env file once at the start of the pipeline and read the resolved values into your working context:**
+
+```bash
+ENV_FILE="${MEETING_DOCUMENTER_ENV_FILE-${SKILL_DIR}/.env}"
+set -a; source "${ENV_FILE}"; set +a
+# Echo back so Claude captures resolved values:
+for v in VAULT_PATH MEETING_NOTES_DIR MEETING_RAW_DIR MEETING_RECORDINGS_DIR \
+         DAILY_NOTES_DIR PROJECTS_DIR MEETING_AUDIO_BACKUP_DIR \
+         DAILY_NOTE_PATH_FORMAT PROJECT_MEETING_SUBDIR LINK_STYLE; do
+  printf '%-26s = %s\n' "$v" "${!v-(unset, using default)}"
+done
+```
+
+Substitute these resolved values literally in subsequent steps. Subsequent bash blocks that need the env (e.g., `date "+${DAILY_NOTE_PATH_FORMAT}"` in Step 5) should re-source `${ENV_FILE}` at the top of the block.
 
 ## Configuration
 
@@ -228,13 +246,16 @@ Generate a `description` that answers: "What changed as a result of this meeting
 
 1. Determine daily note path by joining `${DAILY_NOTES_DIR}` with the strftime-formatted `${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}`:
    ```bash
-   DAILY_NOTE="${DAILY_NOTES_DIR}/$(date "+${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}")"
+   # LC_TIME=C pins %B to English month names (May, not Mai/mai/Mayo) so the
+   # path stays stable across locales. Drop this only if your existing vault
+   # already uses localized month names AND you set LC_TIME consistently.
+   DAILY_NOTE="${DAILY_NOTES_DIR}/$(LC_TIME=C date "+${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}")"
    ```
    Common formats:
    - `%Y-%m-%d.md` → flat: `2026-05-27.md`
    - `%Y/%m-%B/%Y-%m-%d.md` → year/month-name nested (default): `2026/05-May/2026-05-27.md`
    - `Journal/%Y/%Y-%m-%d.md` → Journal subdir: `Journal/2026/2026-05-27.md`
-2. If daily note does not exist, create it from `${VAULT_PATH}/templates/DailyNote.md` (substituting today's date for `{{date}}`). If that template is also absent, fall back to the Standard skeleton — frontmatter with `date:`, `# <date>` heading, `## Meetings` heading + Standard 4-column table, empty `## Carryover` heading, empty `## Notes` heading. A daily-note skill (e.g., `daily-note-creator`) may be invoked instead if one is available in the user's environment.
+2. If daily note does not exist, prefer these creation paths in order: (a) invoke a daily-note skill if one is available in the user's environment (e.g., `daily-note-creator`) — this honors the user's canonical daily-note shape; (b) substitute `{{date}}` in `${VAULT_PATH}/templates/DailyNote.md` if that template exists; (c) fall back to the Standard skeleton — frontmatter with `date:`, `# <date>` heading, `## Meetings` heading + Standard 4-column table, empty `## Carryover` heading, empty `## Notes` heading.
 3. Find the `## Meetings` section and its table
 4. **Adapt to the existing table column format** — do not assume specific columns
 5. Add a new row with links to transcript and summary (form per `LINK_STYLE`)
@@ -247,8 +268,8 @@ See `references/WORKFLOW_DETAILS.md` for daily note edge cases (missing section,
 
 When a project was confirmed in Step 3:
 
-1. Let `SUBDIR="${PROJECT_MEETING_SUBDIR-Meeting}"`. Ensure `${PROJECTS_DIR}/{Project}/${SUBDIR}/` folder exists (`mkdir -p` if needed). If `PROJECT_MEETING_SUBDIR` is set to empty string, reference notes go directly into the project root.
-2. Create a reference note at `${SUBDIR}/YYYY-MM-DD-HHMM Title.md` (or project root if `SUBDIR` empty) containing:
+1. Let `SUBDIR="${PROJECT_MEETING_SUBDIR-Meeting}"`. **Validate `SUBDIR` before use:** reject any value containing `..` (path traversal), any value beginning with `/` (absolute path), or any value containing embedded `/` (multi-segment). If invalid, abort Step 6 and warn the user — `PROJECT_MEETING_SUBDIR` must be a single relative path segment or empty. Then ensure `${PROJECTS_DIR}/{Project}/${SUBDIR}/` folder exists (`mkdir -p` if needed). If `SUBDIR` is empty, reference notes go directly into the project root.
+2. Create a reference note at `${PROJECTS_DIR}/{Project}/${SUBDIR}/YYYY-MM-DD-HHMM Title.md` (or `${PROJECTS_DIR}/{Project}/YYYY-MM-DD-HHMM Title.md` if `SUBDIR` empty) containing:
    - Frontmatter with source/transcript links in `${LINK_STYLE:-wikilink}` form (see SUMMARY_FORMAT § Link Styles)
    - Quick reference: executive summary, action items, key decisions
 3. Update project `Dashboard.md`'s Recent Meetings section (if the section exists)

@@ -93,7 +93,7 @@ Override defaults via environment variables (e.g., in your shell config or a pro
 | `MEETING_AUDIO_BACKUP_DIR` | `$HOME/audio-backups/meetings` | Original recordings (post-archive) |
 | `DAILY_NOTE_PATH_FORMAT` | `%Y/%m-%B/%Y-%m-%d.md` | strftime template for daily-note path (relative to `DAILY_NOTES_DIR`). e.g., `%Y-%m-%d.md` for flat. |
 | `PROJECT_MEETING_SUBDIR` | `Meeting` | Subdir under each project for per-project reference notes. Empty = project root. |
-| `LINK_STYLE` | `wikilink` | `wikilink` (Obsidian) / `markdown` / `plain`. Drives attendee + source link form throughout outputs. |
+| `LINK_STYLE` | `wikilink` | `wikilink` (Obsidian) / `markdown` / `plain`. Drives attendee + source link form in Claude-authored outputs (summary, daily-note rows, project reference notes). **Note:** the Python pipeline emits the transcript's `source:` frontmatter as a bare path regardless of `LINK_STYLE`; the agent rewrites it per `LINK_STYLE` in Step 8b. |
 | `GOOGLE_API_KEY` | (required) | Gemini API key. `GEMINI_API_KEY` also accepted. |
 
 Defaults use neutral folder names. If your vault uses PARA, Johnny.Decimal, or any other layout, point each path env var at the matching directory.

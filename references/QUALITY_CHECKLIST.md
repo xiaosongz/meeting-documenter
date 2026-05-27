@@ -57,7 +57,7 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 
 ## Daily Note (Step 5 — MANDATORY)
 
-- [ ] Daily note exists at `${DAILY_NOTES_DIR}/$(date "+${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}")`
+- [ ] Daily note exists at `${DAILY_NOTES_DIR}/$(LC_TIME=C date "+${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}")` (LC_TIME=C pins month name to English)
 - [ ] Meetings section has table
 - [ ] New row added with correct transcript and summary links (form per `LINK_STYLE`)
 - [ ] **Read the daily note to confirm the row was added**
@@ -83,7 +83,7 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 - [ ] All created files exist and are non-empty
 - [ ] Attendee links match the canonical entry from `KNOWN_SPEAKERS.yaml` (wikilink in `wikilink:` field; same canonical_name otherwise)
 - [ ] All `[assignee:: Name]` values match the canonical names used in attendees
-- [ ] No placeholder names remain: `Unknown`, `TBD`, `Person 1` (in whatever link form)
+- [ ] No placeholder names remain as attendees/assignees. Match per `LINK_STYLE`: `wikilink` → `[[Unknown]]`/`[[TBD]]`/`[[Person 1]]`; `markdown` → `[Unknown](`/`[TBD](`/`[Person 1](`; `plain` → bare `Unknown`/`TBD`/`Person 1` appearing as a YAML attendee value or `[assignee:: ...]` value (NOT as substring in topic prose, which may legitimately mention the words)
 
 ## Cleanup (Step 8)
 

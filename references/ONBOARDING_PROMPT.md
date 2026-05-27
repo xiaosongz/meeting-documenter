@@ -237,13 +237,14 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
    mkdir -p "${MEETING_AUDIO_BACKUP_DIR}"
    ```
 
-4. **Write today's daily note** (path computed from `date`, e.g. `DailyNotes/2026/05-May/2026-05-27.md`). Use a here-doc with today's date substituted:
+4. **Write today's daily note** (path computed from `date` honoring `DAILY_NOTE_PATH_FORMAT`, defaulting to `%Y/%m-%B/%Y-%m-%d.md`). Use a here-doc with today's date substituted:
 
    ```bash
+   # LC_TIME=C pins %B to English (May, not Mai/Mayo) so path is stable across locales.
+   DAILY_REL=$(LC_TIME=C date "+${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}")
    TODAY=$(date +%Y-%m-%d)
-   YEAR=$(date +%Y); MONTH_DIR="$(date +%m)-$(date +%B)"
-   mkdir -p "${VAULT_PATH}/DailyNotes/${YEAR}/${MONTH_DIR}"
-   cat > "${VAULT_PATH}/DailyNotes/${YEAR}/${MONTH_DIR}/${TODAY}.md" <<EOF
+   mkdir -p "$(dirname "${VAULT_PATH}/DailyNotes/${DAILY_REL}")"
+   cat > "${VAULT_PATH}/DailyNotes/${DAILY_REL}" <<EOF
    ---
    date: ${TODAY}
    ---
@@ -287,7 +288,7 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 
 6. **Write daily-note template** (`templates/DailyNote.md`) — same structure as the example daily note but with `{{date}}` placeholder.
 
-7. **Write `.env`.** Point all path vars at the scaffolded dirs:
+7. **Write `.env`.** Point all path vars at the scaffolded dirs and include the three convention env vars as commented defaults so the adopter can flip them later without learning the env-var names from scratch:
 
    ```bash
    VAULT_PATH="<chosen root>"
@@ -298,6 +299,11 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
    PROJECTS_DIR="${VAULT_PATH}/Projects"
    MEETING_AUDIO_BACKUP_DIR="$HOME/audio-backups/meetings"
    GOOGLE_API_KEY="<paste your key here>"
+
+   # Convention overrides — uncomment + edit if your setup differs from defaults
+   # DAILY_NOTE_PATH_FORMAT="%Y/%m-%B/%Y-%m-%d.md"  # examples: "%Y-%m-%d.md" (flat), "Journal/%Y/%Y-%m-%d.md"
+   # PROJECT_MEETING_SUBDIR="Meeting"               # empty string = put refs in project root
+   # LINK_STYLE="wikilink"                          # wikilink | markdown | plain
    ```
 
    **Quote any value that could contain shell metachars.** If the value contains `<`, `>`, `*`, or any shell metachar, quote it: `GOOGLE_API_KEY="<paste your key here>"`. Placeholder tokens like `<chosen root>` and `<paste your key here>` MUST be inside double quotes in the written `.env`, otherwise the shell tries to redirect on `source`.
@@ -312,10 +318,11 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 
 ## Verification (run after adapt or bootstrap)
 
-1. Source `.env` and confirm every required var is set. The `.env` must use quoted placeholder values (e.g. `GOOGLE_API_KEY="<paste your key here>"`) so `set -a; source` doesn't trip on shell metachars like `<`, `>`, or `*`:
+1. Source `.env` and confirm every required var is set. Honor `MEETING_DOCUMENTER_ENV_FILE` if the adapter wrote `.env` outside the skill repo (Mode 2 Step 5 read-only-mount branch). The `.env` must use quoted placeholder values (e.g. `GOOGLE_API_KEY="<paste your key here>"`) so `set -a; source` doesn't trip on shell metachars like `<`, `>`, or `*`:
 
    ```bash
-   set -a; source "${SKILL_DIR}/.env"; set +a
+   ENV_FILE="${MEETING_DOCUMENTER_ENV_FILE-${SKILL_DIR}/.env}"
+   set -a; source "${ENV_FILE}"; set +a
    echo "GOOGLE_API_KEY      = ${GOOGLE_API_KEY:-UNSET}"
    echo "VAULT_PATH          = ${VAULT_PATH:-UNSET}"
    echo "MEETING_NOTES_DIR   = ${MEETING_NOTES_DIR:-UNSET}"
@@ -345,7 +352,7 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 - **Never commit on the user's behalf.** Leave git decisions to them.
 - **Never paste the user's API key into chat output or logs.** Read it once, write to `.env`, do not echo back.
 - **Stop and ask if any probe step returns ambiguous results.** Better to ask than guess wrong about the user's layout.
-- **Surface "known limitations" honestly.** The current `SKILL.md` hardcodes some conventions (daily-note path format, wikilinks, `meeting_outcome` taxonomy). If the user's setup doesn't match, document the mismatch in the final report rather than silently breaking on first run.
+- **Surface "known limitations" honestly.** The `meeting_outcome` taxonomy (`decision | update | planning | blocked | cancelled`) is hardcoded in `references/SUMMARY_FORMAT.md`. If the user prefers a different taxonomy, document the mismatch in the final report. Daily-note path, link form, and project subdir are now parameterized via `DAILY_NOTE_PATH_FORMAT`, `LINK_STYLE`, and `PROJECT_MEETING_SUBDIR` — set them in `.env` rather than calling out as limitations.
 
 ---
 
