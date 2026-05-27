@@ -26,25 +26,41 @@ Given an audio file (MP3 / WAV / OGG / M4A / FLAC / WebM / AAC), the skill:
 ## Install
 
 ```bash
-# 1. Clone into your vault's skills directory
-cd /path/to/your/vault
-git clone https://github.com/xiaosongz/meeting-documenter .claude/skills/meeting-documenter
-cd .claude/skills/meeting-documenter
+# 1. Clone the repo somewhere accessible to Claude Code
+git clone https://github.com/xiaosongz/meeting-documenter
+cd meeting-documenter
+```
 
-# 2. Configure the API key + vault path
+### Guided setup (recommended)
+
+The skill ships with an **onboarding prompt** designed to be read by your own Claude Code agent. It inspects your note-taking system, then either adapts the skill to your existing layout or scaffolds a minimum structure if you don't have one yet.
+
+Open Claude Code in this repo (or wherever your notes live) and run:
+
+> Read `references/ONBOARDING_PROMPT.md` in the meeting-documenter repo and follow it to set this skill up for my system. Start in diagnostic mode.
+
+The agent will walk through three modes:
+
+- **Diagnostic** — read-only inspection; reports what's ready, what's missing, what doesn't match
+- **Adapt** — fits the skill to your existing notes layout by generating `.env` + populating registries
+- **Bootstrap** — scaffolds a minimum folder + template structure if you're starting from scratch
+
+### Manual setup (alternative)
+
+```bash
+# 1. Configure the API key + vault path
 cp .env.example .env
 $EDITOR .env   # set GOOGLE_API_KEY and VAULT_PATH
 
-# 3. Ensure .env is gitignored in your vault repo (the skill's .gitignore already covers itself)
-echo '.claude/skills/meeting-documenter/.env' >> /path/to/your/vault/.gitignore
-
-# 4. Copy the registry templates and fill in your team's data.
+# 2. Copy the registry templates and fill in your team's data.
 #    The .yaml versions are gitignored — only the .template.yaml versions ship publicly.
 cp references/KNOWN_SPEAKERS.template.yaml references/KNOWN_SPEAKERS.yaml
 cp references/PROJECT_KEYWORDS.template.yaml references/PROJECT_KEYWORDS.yaml
 $EDITOR references/KNOWN_SPEAKERS.yaml
 $EDITOR references/PROJECT_KEYWORDS.yaml
 ```
+
+> **First-run side effect:** the first invocation of `scripts/transcribe.sh` (including `--help`) creates a `.venv/` inside this repo via `uv` and installs `google-genai`. The directory is gitignored. Skip the first run if the repo is on a read-only mount.
 
 ## Use
 
@@ -89,6 +105,7 @@ Defaults use neutral folder names. If your vault uses PARA, Johnny.Decimal, or a
 │   ├── split-audio.sh                # Silence-aware splitter for long audio
 │   └── cleanup-source-audio.sh       # Verify archive, backup original, clean vault root
 ├── references/
+│   ├── ONBOARDING_PROMPT.md               # Prompt your Claude Code agent reads to adapt the skill to your system
 │   ├── SUMMARY_FORMAT.md                  # Output spec for summaries
 │   ├── QUALITY_CHECKLIST.md               # Verification checklist (Step 7)
 │   ├── WORKFLOW_DETAILS.md                # Edge cases + fast-paths

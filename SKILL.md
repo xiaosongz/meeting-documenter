@@ -28,6 +28,31 @@ End-to-end meeting documentation: audio compression, transcription, structured s
 - User mentions "document this meeting", "process this recording", "create meeting notes"
 - User provides an existing transcript and asks for summary + integration
 
+## Resolving `${SKILL_DIR}`
+
+Every script invocation in this doc uses `${SKILL_DIR}` as a placeholder for the absolute path to your `meeting-documenter` clone. Before running any of the bash blocks below, resolve and export it once:
+
+```bash
+export SKILL_DIR="<absolute path to the meeting-documenter clone>"
+# example: export SKILL_DIR="$HOME/git/meeting-documenter"
+```
+
+`scripts/transcribe.sh` also re-derives and re-exports `SKILL_DIR` from its own location, so child scripts always see a valid value.
+
+## First-time setup (per-user)
+
+If `.env` or the registry `.yaml` files are missing the first time this skill is invoked, **stop the pipeline** and direct the user to the onboarding prompt instead:
+
+> "Setup hasn't been completed for this user yet. Recommend running `references/ONBOARDING_PROMPT.md` first — it inspects your notes layout and adapts the skill to fit it (or scaffolds a minimum structure if you're starting from scratch)."
+
+Detection check (run before Step 0):
+
+```bash
+test -f "${SKILL_DIR}/.env" && test -f "${SKILL_DIR}/references/KNOWN_SPEAKERS.yaml"
+```
+
+If either file is missing, do not proceed — point the user at `references/ONBOARDING_PROMPT.md` and exit.
+
 ## Configuration
 
 The skill writes into the directories listed below. Defaults are neutral folder names — override via environment variables to match your vault layout (PARA, Johnny.Decimal, custom, etc.):
@@ -131,7 +156,7 @@ The transcription pipeline automatically handles two common audio issues before 
 Run the transcription pipeline — a single command that handles everything:
 
 ```bash
-"${VAULT_PATH}/.claude/skills/meeting-documenter/scripts/transcribe.sh" \
+"${SKILL_DIR}/scripts/transcribe.sh" \
   "/path/to/audio.mp3" \
   --no-archive \
   --context-file /tmp/meeting_context.txt \
@@ -163,7 +188,7 @@ After transcription, create a trimmed, compressed recording in the vault as a pe
 
 1. **Trim + compress** the original recording (remove trailing silence, encode as OGG Vorbis or Opus):
    ```bash
-   "${VAULT_PATH}/.claude/skills/meeting-documenter/scripts/compress-audio.sh" \
+   "${SKILL_DIR}/scripts/compress-audio.sh" \
      "/path/to/original.m4a" \
      --output "${MEETING_RECORDINGS_DIR}/YYYY-MM-DD-HHMM Title.ogg"
    ```
@@ -198,7 +223,7 @@ Generate a `description` that answers: "What changed as a result of this meeting
 ### Step 5: Update Daily Note
 
 1. Determine daily note path: `${DAILY_NOTES_DIR}/YYYY/MM-MonthName/YYYY-MM-DD.md`
-2. If daily note does not exist, create it first (use a daily-note skill if available)
+2. If daily note does not exist, create it from `${VAULT_PATH}/templates/DailyNote.md` (substituting today's date for `{{date}}`). If that template is also absent, fall back to the Standard skeleton — frontmatter with `date:`, `# <date>` heading, `## Meetings` heading + Standard 4-column table, empty `## Carryover` heading, empty `## Notes` heading. A daily-note skill (e.g., `daily-note-creator`) may be invoked instead if one is available in the user's environment.
 3. Find the `## Meetings` section and its table
 4. **Adapt to the existing table column format** — do not assume specific columns
 5. Add a new row with wikilinks to transcript and summary
@@ -242,7 +267,7 @@ rm -f /tmp/meeting_context.txt
 **8b. Backup source audio and clean vault root:**
 
 ```bash
-"${VAULT_PATH}/.claude/skills/meeting-documenter/scripts/cleanup-source-audio.sh" \
+"${SKILL_DIR}/scripts/cleanup-source-audio.sh" \
   "/path/to/Recording YYYYMMDDHHMMSS.m4a" \
   "${MEETING_RECORDINGS_DIR}/YYYY-MM-DD-HHMM Title.ogg" \
   --meeting-name "Meeting Title" \

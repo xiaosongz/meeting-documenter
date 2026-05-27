@@ -11,24 +11,24 @@
 #
 # ─── REPLACE THE EXAMPLES BELOW WITH YOUR OWN PROJECTS ──────────────────────
 
-PROJECT_ALPHA:
-  - project alpha
-  - alpha study
-  - alpha-cohort
+REPLACE_ME_PROJECT_1:
+  - replace-me-keyword-1a
+  - replace-me-keyword-1b
+  - replace-me-keyword-1c
   # Add unique keywords your team uses for this project
 
-PROJECT_BRAVO:
-  - project bravo
-  - bravo trial
-  - bravo intervention
+REPLACE_ME_PROJECT_2:
+  - replace-me-keyword-2a
+  - replace-me-keyword-2b
+  - replace-me-keyword-2c
 
-PROJECT_CHARLIE:
-  - project charlie
-  - charlie pipeline
-  - charlie dashboard
+REPLACE_ME_PROJECT_3:
+  - replace-me-keyword-3a
+  - replace-me-keyword-3b
+  - replace-me-keyword-3c
 
 # Generic team/meeting keywords (lower priority, prefix with _)
-_TEAM_OPS:
-  - team ops
-  - standup
-  - retrospective
+_REPLACE_ME_TEAM_1:
+  - replace-me-keyword-team-1a
+  - replace-me-keyword-team-1b
+  - replace-me-keyword-team-1c

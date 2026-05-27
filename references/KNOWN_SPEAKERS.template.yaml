@@ -29,31 +29,31 @@
 speakers:
 
   # ─── Example: PI / Team Lead ───
-  - canonical_name: Alice Example
-    aliases: [Alice, A. Example, Allice]
-    role: Principal Investigator
-    teams: [PROJECT_ALPHA, PROJECT_BRAVO]
-    wikilink: "[[Alice Example]]"
-    notes: "alice@example.org"
+  - canonical_name: REPLACE_ME_PERSON_1
+    aliases: [REPLACE_ME_ALIAS_1a, REPLACE_ME_ALIAS_1b]
+    role: REPLACE_ME_ROLE_1
+    teams: [REPLACE_ME_PROJECT_1]
+    wikilink: "[[REPLACE_ME_PERSON_1]]"
+    notes: "replace-me@example.invalid"
 
   # ─── Example: Analyst with many alias variants ───
-  - canonical_name: Bob Sample
-    aliases: [Bob, B. Sample, Bobby, Bobb]
-    role: Data Analyst
-    teams: [PROJECT_ALPHA]
-    wikilink: "[[Bob Sample]]"
+  - canonical_name: REPLACE_ME_PERSON_2
+    aliases: [REPLACE_ME_ALIAS_2a, REPLACE_ME_ALIAS_2b, REPLACE_ME_ALIAS_2c, REPLACE_ME_ALIAS_2d]
+    role: REPLACE_ME_ROLE_2
+    teams: [REPLACE_ME_PROJECT_1]
+    wikilink: "[[REPLACE_ME_PERSON_2]]"
 
   # ─── Example: Non-English name with transliteration aliases ───
-  - canonical_name: Chen Wei
-    aliases: [Wei Chen, 陈伟, "陈伟 (Chen Wei)", Chenwei]
-    role: Researcher
-    teams: [PROJECT_BRAVO]
-    wikilink: "[[Chen Wei]]"
+  - canonical_name: REPLACE_ME_PERSON_3
+    aliases: [REPLACE_ME_ALIAS_3a, REPLACE_ME_非ASCII]
+    role: REPLACE_ME_ROLE_3
+    teams: [REPLACE_ME_PROJECT_2]
+    wikilink: "[[REPLACE_ME_PERSON_3]]"
 
   # ─── Example: External collaborator ───
-  - canonical_name: Dr. Dana External
-    aliases: [Dana, Dr. External, External]
-    role: External Collaborator
-    teams: [PROJECT_BRAVO]
-    wikilink: "[[Dr. Dana External]]"
-    notes: "dana@partner-institution.example"
+  - canonical_name: REPLACE_ME_PERSON_4
+    aliases: [REPLACE_ME_ALIAS_4a, REPLACE_ME_ALIAS_4b]
+    role: REPLACE_ME_ROLE_4
+    teams: [REPLACE_ME_PROJECT_2]
+    wikilink: "[[REPLACE_ME_PERSON_4]]"
+    notes: "replace-me@example.invalid"

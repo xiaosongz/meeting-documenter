@@ -10,6 +10,7 @@
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+export SKILL_DIR
 VENV_DIR="${SKILL_DIR}/.venv"
 
 # 1. Ensure .venv exists (idempotent, fast no-op if present)
