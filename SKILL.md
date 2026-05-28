@@ -88,6 +88,7 @@ The skill writes into the directories listed below. Defaults are neutral folder 
 | `DAILY_NOTE_PATH_FORMAT` | `%Y/%m-%B/%Y-%m-%d.md` | strftime template relative to `DAILY_NOTES_DIR`. Examples: `%Y-%m-%d.md` (flat) ・ `Journal/%Y/%Y-%m-%d.md` (Journal subdir) |
 | `PROJECT_MEETING_SUBDIR` | `Meeting` | Subdirectory under each `${PROJECTS_DIR}/{Name}/` for per-project reference notes. Empty string `""` writes refs directly into project root. |
 | `LINK_STYLE` | `wikilink` | One of `wikilink` (Obsidian `[[Name]]`), `markdown` (`[Name](path)`), or `plain` (bare `Name`, no link). Drives attendee/transcript/recording link form in Steps 4-6 + `references/SUMMARY_FORMAT.md`. |
+| `MEETING_DOCUMENTER_ENV_FILE` | `${SKILL_DIR}/.env` | Absolute path to the `.env` file that `scripts/transcribe.sh` and the first-run detection check should source. **Set in your shell (e.g., `~/.zshrc`, not in the `.env` itself — putting it inside the file it points to is circular.)** Useful for read-only mounts, shared installs, multi-user hosts. |
 | `GOOGLE_API_KEY` | (required) | Gemini API key — set in `.env`. `GEMINI_API_KEY` also accepted. |
 
 The skill reads two YAML registries from `references/`:
@@ -268,15 +269,17 @@ See `references/WORKFLOW_DETAILS.md` for daily note edge cases (missing section,
 
 When a project was confirmed in Step 3:
 
-1. Let `SUBDIR="${PROJECT_MEETING_SUBDIR-Meeting}"`. **Validate `SUBDIR` before use:** reject any value containing `..` (path traversal), any value beginning with `/` (absolute path), or any value containing embedded `/` (multi-segment). If invalid, abort Step 6 and warn the user — `PROJECT_MEETING_SUBDIR` must be a single relative path segment or empty. Then ensure `${PROJECTS_DIR}/{Project}/${SUBDIR}/` folder exists (`mkdir -p` if needed). If `SUBDIR` is empty, reference notes go directly into the project root.
-2. Create a reference note at `${PROJECTS_DIR}/{Project}/${SUBDIR}/YYYY-MM-DD-HHMM Title.md` (or `${PROJECTS_DIR}/{Project}/YYYY-MM-DD-HHMM Title.md` if `SUBDIR` empty) containing:
-   - Frontmatter with source/transcript links in `${LINK_STYLE:-wikilink}` form (see SUMMARY_FORMAT § Link Styles)
+1. Let `SUBDIR="${PROJECT_MEETING_SUBDIR-Meeting}"`. **Validate `SUBDIR` before use:** reject any value containing `..` (path traversal), any value beginning with `/` (absolute path), or any value containing embedded `/` (multi-segment). If invalid, abort Step 6 and warn the user — `PROJECT_MEETING_SUBDIR` must be a single relative path segment or empty. Determine the reference-note directory:
+   - If `SUBDIR` is non-empty, use `${PROJECTS_DIR}/{Project}/${SUBDIR}/` (run `mkdir -p` to ensure it exists).
+   - If `SUBDIR` is empty, use the project root `${PROJECTS_DIR}/{Project}/` directly — no subdirectory.
+2. Create a reference note named `YYYY-MM-DD-HHMM Title.md` inside the directory chosen in step 1, containing:
+   - Frontmatter with source/transcript links in `${LINK_STYLE:-wikilink}` form (see `references/SUMMARY_FORMAT.md § Link Styles`)
    - Quick reference: executive summary, action items, key decisions
 3. Update project `Dashboard.md`'s Recent Meetings section (if the section exists)
 4. Update the Dashboard's `updated:` frontmatter field to today's date
 5. Verify the reference note via Read
 
-**Multi-project meetings**: When a meeting spans multiple projects, create a project-specific reference note in each project's `${SUBDIR}/` folder. Each reference note should contain only that project's decisions and action items, linking back to the full summary. See `references/WORKFLOW_DETAILS.md § Multi-Project Meetings`.
+**Multi-project meetings**: When a meeting spans multiple projects, create a project-specific reference note for each project — placed in the per-project reference directory chosen by the same rule above (the `${SUBDIR}` subdirectory if set, otherwise the project root). Each reference note should contain only that project's decisions and action items, linking back to the full summary. See `references/WORKFLOW_DETAILS.md § Multi-Project Meetings`.
 
 ### Step 7: Verify All Links
 

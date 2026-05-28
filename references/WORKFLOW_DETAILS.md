@@ -129,7 +129,7 @@ When `PROJECT_MEETING_SUBDIR=""`, reference notes go directly into the project r
 
 ### No Dashboard or No Recent Meetings Section
 
-If the project `Dashboard.md` does not have a Recent Meetings section, skip the dashboard update. The reference note in `${PROJECT_MEETING_SUBDIR-Meeting}/` (or project root) is sufficient for discoverability.
+If the project `Dashboard.md` does not have a Recent Meetings section, skip the dashboard update. The reference note in the per-project reference directory (`${PROJECT_MEETING_SUBDIR-Meeting}/` subdir if set, otherwise the project root) is sufficient for discoverability.
 
 ## Step 3b: Transcript Renaming (Optional)
 

@@ -69,13 +69,13 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 
 ## Project Linking (Step 6 — when project identified)
 
-- [ ] Reference note created at `${PROJECTS_DIR}/{Project}/${PROJECT_MEETING_SUBDIR-Meeting}/` (or project root if `PROJECT_MEETING_SUBDIR=""`)
+- [ ] Reference note created in the per-project reference directory — `${PROJECTS_DIR}/{Project}/${PROJECT_MEETING_SUBDIR-Meeting}/` when `PROJECT_MEETING_SUBDIR` is set, otherwise the project root `${PROJECTS_DIR}/{Project}/`
 - [ ] Contains links to summary and transcript (form per `LINK_STYLE`)
 - [ ] Includes quick reference (executive summary, action items, key decisions)
 - [ ] Dashboard updated if it has a Recent Meetings section
 - [ ] Dashboard `updated:` frontmatter field bumped to today's date
 - [ ] **Read the reference note to confirm links are correct**
-- [ ] **Multi-project**: If meeting spans multiple projects, reference notes exist in each project's `${PROJECT_MEETING_SUBDIR-Meeting}/` folder with project-scoped content
+- [ ] **Multi-project**: If meeting spans multiple projects, a reference note exists for each project in its per-project reference directory (`${PROJECT_MEETING_SUBDIR-Meeting}/` subdir if set, otherwise the project root) with project-scoped content
 
 ## Link Validation (Step 7)
 

@@ -201,7 +201,7 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
    - `KNOWN_SPEAKERS.yaml`: <N entries>
    - `PROJECT_KEYWORDS.yaml`: <N entries>
    - Convention env vars resolved (`DAILY_NOTE_PATH_FORMAT`, `PROJECT_MEETING_SUBDIR`, `LINK_STYLE`)
-   - Next step: "Try `transcribe.sh path/to/test.mp3` to confirm the pipeline runs end-to-end."
+   - Next step: "Try `scripts/transcribe.sh path/to/test.mp3` (from the meeting-documenter repo root) to confirm the pipeline runs end-to-end."
 
 ---
 

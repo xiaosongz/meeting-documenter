@@ -36,9 +36,15 @@ All `[[Name]]` examples in this document are written in the default Obsidian wik
 
 | `LINK_STYLE` | Attendee in YAML | Inline person ref | Transcript/recording source |
 |---|---|---|---|
-| `wikilink` (default) | `"[[Alex Kim]]"` | `[[Alex Kim]]` | `[[raw/2026-05-27-1030 Sync-Transcript\|Full Transcript]]` |
+| `wikilink` (default) | `"[[Alex Kim]]"` | `[[Alex Kim]]` | see code fence below |
 | `markdown` | `"[Alex Kim](People/Alex%20Kim.md)"` | `[Alex Kim](People/Alex%20Kim.md)` | `[Full Transcript](raw/2026-05-27-1030%20Sync-Transcript.md)` |
 | `plain` | `Alex Kim` (string, no link) | `Alex Kim` | `raw/2026-05-27-1030 Sync-Transcript.md` |
+
+**Wikilink transcript/recording source** uses Obsidian's display-text aliasing — the `|` is the alias separator and **must be emitted bare**, not escaped. (The table cell above can't carry a literal `|` without breaking the column delimiter, so the form is shown here instead):
+
+```text
+[[raw/2026-05-27-1030 Sync-Transcript|Full Transcript]]
+```
 
 For `markdown` style, the agent must know the path to each linked note. For attendees, default to `People/<Name>.md` if no other layout is configured. For `plain` style, no clickable navigation is produced — pick this only if the user's note system doesn't support either link form.
 
