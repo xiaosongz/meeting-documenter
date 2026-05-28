@@ -26,8 +26,23 @@ if ! "${VENV_DIR}/bin/python3" -c "import google.genai" 2>/dev/null; then
 fi
 
 # 3. Load API key (.env must set GOOGLE_API_KEY=...)
-if [[ -f "${SKILL_DIR}/.env" ]]; then
-  set -a; source "${SKILL_DIR}/.env"; set +a
+# Allow override: MEETING_DOCUMENTER_ENV_FILE=/path/to/.env supports shared installs,
+# read-only mounts, multi-user hosts. Default is ${SKILL_DIR}/.env.
+# Note: bare `-` (not `:-`) so an explicit empty value opts out of file loading.
+ENV_FILE="${MEETING_DOCUMENTER_ENV_FILE-${SKILL_DIR}/.env}"
+if [[ -n "${ENV_FILE}" && -f "${ENV_FILE}" ]]; then
+  # Defense: source executes arbitrary code. Refuse files we don't own or that
+  # are group/world-writable — prevents env-file injection on shared hosts.
+  if [[ ! -O "${ENV_FILE}" ]]; then
+    echo "Refusing to source ${ENV_FILE}: not owned by current user (UID=${UID})." >&2
+    exit 1
+  fi
+  perm=$(stat -f '%Lp' "${ENV_FILE}" 2>/dev/null || stat -c '%a' "${ENV_FILE}" 2>/dev/null)
+  if (( 8#${perm:-0} & 022 )); then
+    echo "Refusing to source ${ENV_FILE}: group or world writable (mode=${perm}). chmod 600 ${ENV_FILE} to fix." >&2
+    exit 1
+  fi
+  set -a; source "${ENV_FILE}"; set +a
 fi
 
 # 4. Delegate to Python pipeline

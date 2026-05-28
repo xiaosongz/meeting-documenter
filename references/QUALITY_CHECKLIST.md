@@ -6,6 +6,10 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 
 **VERIFY each item before marking the task complete.**
 
+> **Note on link-form checks:** The `wikilink`-form examples below (`[[Name]]`, `[[raw/...|Full Transcript]]`) are the default. When `LINK_STYLE=markdown`, substitute `[Name](path/Name.md)` form; when `LINK_STYLE=plain`, the check is "name string present" with no link assertion. See `SUMMARY_FORMAT.md § Link Styles` for the substitution table.
+>
+> **Note on path checks:** The daily-note path uses `DAILY_NOTE_PATH_FORMAT` (default `%Y/%m-%B/%Y-%m-%d.md`). The project reference-note subdir uses `PROJECT_MEETING_SUBDIR` (default `Meeting`; empty string = project root). Substitute these when verifying.
+
 ## Audio Preparation (Step 1)
 
 - [ ] `scripts/compress-audio.sh` exited with code 0
@@ -27,7 +31,7 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 - [ ] Filename matches meeting convention: `YYYY-MM-DD-HHMM Title.ogg`
 - [ ] Duration matches trimmed audio (no trailing silence)
 - [ ] Codec is Vorbis or Opus (OGG container)
-- [ ] Transcript `source:` frontmatter updated to wikilink the recording
+- [ ] Transcript `source:` frontmatter updated to link the recording (form per `LINK_STYLE`)
 - [ ] Summary footer includes recording link
 
 ## Transcript (Step 2)
@@ -45,7 +49,7 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 - [ ] Filename: `YYYY-MM-DD-HHMM Title.md` (SPACE before title)
 - [ ] YAML frontmatter includes: title, date, type, tags, attendees, meeting_type, meeting_outcome
 - [ ] `description` field present (~150 chars, adds info beyond title)
-- [ ] Attendees use wikilink format: `"[[Name]]"`
+- [ ] Attendees use the link form set by `LINK_STYLE` (default `wikilink` → `"[[Name]]"`; see SUMMARY_FORMAT.md § Link Styles)
 - [ ] Sections present: Executive Summary, Key Decisions, Action Items, Parking Lot, Topics, Follow-Up
 - [ ] Action items have: checkbox format, `[assignee::]`, `[project::]`, `[due::]` (when explicit)
 - [ ] Parking Lot items have NO owner (deferred items only)
@@ -53,9 +57,9 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 
 ## Daily Note (Step 5 — MANDATORY)
 
-- [ ] Daily note exists at `${DAILY_NOTES_DIR}/YYYY/MM-Month/YYYY-MM-DD.md`
+- [ ] Daily note exists at `${DAILY_NOTES_DIR}/$(LC_TIME=C date "+${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}")` (LC_TIME=C pins month name to English)
 - [ ] Meetings section has table
-- [ ] New row added with correct wikilinks to transcript and summary
+- [ ] New row added with correct transcript and summary links (form per `LINK_STYLE`)
 - [ ] **Read the daily note to confirm the row was added**
 
 ## Carryover Cross-Reference (Step 5b)
@@ -65,28 +69,28 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 
 ## Project Linking (Step 6 — when project identified)
 
-- [ ] Reference note created at `${PROJECTS_DIR}/{Project}/Meeting/`
-- [ ] Contains wikilinks to summary and transcript
+- [ ] Reference note created in the per-project reference directory — `${PROJECTS_DIR}/{Project}/${PROJECT_MEETING_SUBDIR-Meeting}/` when `PROJECT_MEETING_SUBDIR` is set, otherwise the project root `${PROJECTS_DIR}/{Project}/`
+- [ ] Contains links to summary and transcript (form per `LINK_STYLE`)
 - [ ] Includes quick reference (executive summary, action items, key decisions)
 - [ ] Dashboard updated if it has a Recent Meetings section
 - [ ] Dashboard `updated:` frontmatter field bumped to today's date
-- [ ] **Read the reference note to confirm wikilinks are correct**
-- [ ] **Multi-project**: If meeting spans multiple projects, reference notes exist in each project's `Meeting/` folder with project-scoped content
+- [ ] **Read the reference note to confirm links are correct**
+- [ ] **Multi-project**: If meeting spans multiple projects, a reference note exists for each project in its per-project reference directory (`${PROJECT_MEETING_SUBDIR-Meeting}/` subdir if set, otherwise the project root) with project-scoped content
 
 ## Link Validation (Step 7)
 
-- [ ] All wikilinks use Obsidian format: `[[path/to/note|Display Text]]`
+- [ ] All links use the form set by `LINK_STYLE` (default `wikilink`: `[[path/to/note|Display Text]]`; `markdown`: `[Display Text](path/to/note.md)`; `plain`: bare name with no link)
 - [ ] All created files exist and are non-empty
-- [ ] Attendee wikilinks match `wikilink` field from `KNOWN_SPEAKERS.yaml`
+- [ ] Attendee links match the canonical entry from `KNOWN_SPEAKERS.yaml` (wikilink in `wikilink:` field; same canonical_name otherwise)
 - [ ] All `[assignee:: Name]` values match the canonical names used in attendees
-- [ ] No placeholder names remain: `[[Unknown]]`, `[[TBD]]`, `[[Person 1]]`
+- [ ] No placeholder names remain as attendees/assignees. Match per `LINK_STYLE`: `wikilink` → `[[Unknown]]`/`[[TBD]]`/`[[Person 1]]`; `markdown` → `[Unknown](`/`[TBD](`/`[Person 1](`; `plain` → bare `Unknown`/`TBD`/`Person 1` appearing as a YAML attendee value or `[assignee:: ...]` value (NOT as substring in topic prose, which may legitimately mention the words)
 
 ## Cleanup (Step 8)
 
 ### 8a: Temp Files
 - [ ] `/tmp/meeting_context.txt` removed (prevents stale context contaminating future transcriptions)
 - [ ] Confirmed file no longer exists
-- [ ] Chunk temp files cleaned (pipeline auto-cleans, but verify `/tmp/meeting_chunks_*` if needed)
+- [ ] `/tmp/meeting_chunks_<PID>/` removed (pipeline cleans in its `finally` block; verify for the PID just printed in pipeline output and clean any orphans from older crashes)
 
 ### 8b: Source Audio Backup
 - [ ] `cleanup-source-audio.sh` ran successfully (exit code 0)

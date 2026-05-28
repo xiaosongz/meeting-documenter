@@ -110,7 +110,7 @@ The daily note meeting table may not match the expected format. Common variation
 | Standard | `Time \| Meeting \| Transcript \| Summary` |
 | Extended | `Time \| Meeting \| Attendees \| Notes` |
 
-Adapt to whatever column structure exists. Place transcript and summary wikilinks in the most appropriate column (usually "Notes" or create separate entries).
+Adapt to whatever column structure exists. Place transcript and summary links (form per `LINK_STYLE`) in the most appropriate column (usually "Notes" or create separate entries).
 
 ### No Meetings Section
 
@@ -118,22 +118,24 @@ If the daily note has no `## Meetings` section, add one after the Focus or Carry
 
 ## Step 6: Project Folder Edge Cases
 
-### No Meeting/ Folder
+### No Reference-Note Subdir
 
-Create it:
+Let `SUBDIR="${PROJECT_MEETING_SUBDIR-Meeting}"`. Create it:
 ```bash
-mkdir -p "${PROJECTS_DIR}/{ProjectName}/Meeting"
+mkdir -p "${PROJECTS_DIR}/{ProjectName}/${SUBDIR}"
 ```
+
+When `PROJECT_MEETING_SUBDIR=""`, reference notes go directly into the project root — no subdir to create.
 
 ### No Dashboard or No Recent Meetings Section
 
-If the project `Dashboard.md` does not have a Recent Meetings section, skip the dashboard update. The reference note in `Meeting/` is sufficient for discoverability.
+If the project `Dashboard.md` does not have a Recent Meetings section, skip the dashboard update. The reference note in the per-project reference directory (`${PROJECT_MEETING_SUBDIR-Meeting}/` subdir if set, otherwise the project root) is sufficient for discoverability.
 
 ## Step 3b: Transcript Renaming (Optional)
 
 The transcript is created in Step 2 before the meeting title is confirmed in Step 3. This means the transcript filename may not match the final summary filename (e.g., transcript: `Generic-Meeting-Transcript.md`, summary: `ProjectAlpha-Sync.md`).
 
-After the title is confirmed in Step 3, you may optionally rename the transcript to match. If Obsidian is running, use its native rename (which auto-updates wikilinks); otherwise grep + manual fixup.
+After the title is confirmed in Step 3, you may optionally rename the transcript to match. If `LINK_STYLE=wikilink` and Obsidian is running, use its native rename (which auto-updates wikilinks); otherwise grep + manual fixup.
 
 **When to rename:**
 - When the auto-generated title is generic and the confirmed title is much more descriptive
@@ -143,7 +145,7 @@ After the title is confirmed in Step 3, you may optionally rename the transcript
 - When the titles are similar enough that the mismatch is trivial
 - When Obsidian is not running (manual link updates needed)
 
-If you skip renaming, the transcript wikilink in the summary will still work because it uses the original path. The mismatch is cosmetic, not functional.
+If you skip renaming, the transcript link in the summary will still work because it uses the original path. The mismatch is cosmetic, not functional.
 
 ## Step 5b: Carryover Task Cross-Reference
 
@@ -182,8 +184,8 @@ One meeting produces these files:
 | File | Location | Content |
 |------|----------|---------|
 | **Full summary** | `${MEETING_NOTES_DIR}/YYYY-MM-DD-HHMM Title.md` | Complete summary with all topics, decisions, action items |
-| **Project A reference** | `${PROJECTS_DIR}/ProjectA/Meeting/YYYY-MM-DD-HHMM Title.md` | Filtered: only Project A decisions + action items |
-| **Project B reference** | `${PROJECTS_DIR}/ProjectB/Meeting/YYYY-MM-DD-HHMM Title.md` | Filtered: only Project B decisions + action items |
+| **Project A reference** | `${PROJECTS_DIR}/ProjectA/${PROJECT_MEETING_SUBDIR-Meeting}/YYYY-MM-DD-HHMM Title.md` | Filtered: only Project A decisions + action items |
+| **Project B reference** | `${PROJECTS_DIR}/ProjectB/${PROJECT_MEETING_SUBDIR-Meeting}/YYYY-MM-DD-HHMM Title.md` | Filtered: only Project B decisions + action items |
 
 ### Reference Note Format
 
