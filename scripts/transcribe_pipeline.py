@@ -424,6 +424,19 @@ def resplit_chunk(chunk: AudioChunk, target_duration: int) -> list[AudioChunk]:
 
 # ─── Transcription ──────────────────────────────────────────────────────────
 
+def _finish_name(reason) -> str:
+    """Normalize FinishReason enum to bare member name.
+
+    google-genai's FinishReason is a `str`-subclass Enum, but `str(member)`
+    returns `"FinishReason.MAX_TOKENS"` (Enum's __str__), not the bare name.
+    `.name` always returns the bare name on Enum instances; fall back to
+    `str()` for anything weird upstream (e.g., None or a plain string).
+    """
+    if reason is None:
+        return "NONE"
+    return getattr(reason, "name", str(reason))
+
+
 def check_truncation(response, chunk_duration_seconds: int) -> bool:
     """Returns True if transcript appears truncated."""
     # No candidates = safety filter / empty response. Reach here BEFORE
@@ -433,9 +446,9 @@ def check_truncation(response, chunk_duration_seconds: int) -> bool:
         print("   ⚠ No candidates in response (safety filter or empty)")
         return True
     candidate = response.candidates[0]
-    finish_str = str(candidate.finish_reason)
+    finish_str = _finish_name(candidate.finish_reason)
 
-    # Explicit truncation — str() because google-genai returns enum
+    # Explicit truncation
     if finish_str == "MAX_TOKENS":
         print("   ⚠ Truncation detected: MAX_TOKENS finish reason")
         return True
@@ -465,7 +478,7 @@ def is_transient_failure(response) -> bool:
     """True if failure is transient (retry same chunk), False if structural (re-split)."""
     if not response.candidates:
         return True
-    finish_str = str(response.candidates[0].finish_reason)
+    finish_str = _finish_name(response.candidates[0].finish_reason)
     if finish_str in TRANSIENT_REASONS:
         return True
     if response.text is None and finish_str != "MAX_TOKENS":
@@ -514,7 +527,7 @@ def transcribe_chunk(client, chunk: AudioChunk, model: str,
         candidates_tokens = usage.candidates_token_count or 0
         print(f"   Tokens: {prompt_tokens:,} in, "
               f"{candidates_tokens:,} out")
-    finish = response.candidates[0].finish_reason if response.candidates else "UNKNOWN"
+    finish = _finish_name(response.candidates[0].finish_reason) if response.candidates else "UNKNOWN"
     print(f"   Finish reason: {finish}")
 
     return response
@@ -557,7 +570,7 @@ def transcribe_with_retry(client, chunks: list[AudioChunk], model: str,
         elif chunk.depth >= max_depth:
             if response.text is None:
                 finish_str = (
-                    str(response.candidates[0].finish_reason)
+                    _finish_name(response.candidates[0].finish_reason)
                     if response.candidates else "no-candidates"
                 )
                 print(f"   ❌ No text after {max_depth} re-splits + "

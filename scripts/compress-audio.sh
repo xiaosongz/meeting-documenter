@@ -25,6 +25,10 @@ EXT="${INPUT##*.}"
 EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
 
 OUTPUT="${OUTPUT:-${INPUT%.*}.ogg}"
+# Ensure destination dir exists for both OGG fast path and encode path.
+# Without this, ffmpeg / cp fail with a confusing "path-not-found" error
+# when the caller targets a subdir that hasn't been created yet.
+mkdir -p "$(dirname "$OUTPUT")"
 
 # Skip re-encoding if already OGG with valid codec, but still honor --output:
 # the caller expects $OUTPUT to exist at a specific path (e.g., archive subdir).
@@ -34,12 +38,20 @@ OUTPUT="${OUTPUT:-${INPUT%.*}.ogg}"
 if [[ "$EXT_LOWER" == "ogg" ]]; then
   EXISTING_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$INPUT" 2>/dev/null)
   if [[ "$EXISTING_CODEC" == "vorbis" || "$EXISTING_CODEC" == "opus" ]]; then
+    # Decode-integrity probe BEFORE trusting the source as archive.
+    # Without this, a header-valid but payload-corrupted OGG would be
+    # copied verbatim and reported as a successful archive — silent data
+    # loss. Re-encode path enforces the same contract at line ~74.
+    SRC_ERRORS=$(ffmpeg -v error -i "$INPUT" -f null - 2>&1)
+    if [[ -n "$SRC_ERRORS" ]]; then
+      echo "FAIL: Source OGG has decode errors: $SRC_ERRORS" >&2
+      exit 2
+    fi
     if [[ "$OUTPUT" -ef "$INPUT" ]]; then
-      echo "Already OGG ($EXISTING_CODEC), in place: $INPUT"
+      echo "Already OGG ($EXISTING_CODEC, verified), in place: $INPUT"
     else
-      mkdir -p "$(dirname "$OUTPUT")"
       cp -f "$INPUT" "$OUTPUT"
-      echo "Already OGG ($EXISTING_CODEC), copied to: $OUTPUT"
+      echo "Already OGG ($EXISTING_CODEC, verified), copied to: $OUTPUT"
     fi
     exit 0
   fi
