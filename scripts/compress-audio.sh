@@ -24,16 +24,26 @@ fi
 EXT="${INPUT##*.}"
 EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
 
-# Skip if already OGG with valid codec
+OUTPUT="${OUTPUT:-${INPUT%.*}.ogg}"
+
+# Skip re-encoding if already OGG with valid codec, but still honor --output:
+# the caller expects $OUTPUT to exist at a specific path (e.g., archive subdir).
+# `-ef` is true when both paths resolve to the same inode — that's the only
+# case where copying is a no-op. If $OUTPUT does not yet exist, `-ef` is false
+# and we copy.
 if [[ "$EXT_LOWER" == "ogg" ]]; then
   EXISTING_CODEC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$INPUT" 2>/dev/null)
   if [[ "$EXISTING_CODEC" == "vorbis" || "$EXISTING_CODEC" == "opus" ]]; then
-    echo "Already OGG ($EXISTING_CODEC), skipping: $INPUT"
+    if [[ "$OUTPUT" -ef "$INPUT" ]]; then
+      echo "Already OGG ($EXISTING_CODEC), in place: $INPUT"
+    else
+      mkdir -p "$(dirname "$OUTPUT")"
+      cp -f "$INPUT" "$OUTPUT"
+      echo "Already OGG ($EXISTING_CODEC), copied to: $OUTPUT"
+    fi
     exit 0
   fi
 fi
-
-OUTPUT="${OUTPUT:-${INPUT%.*}.ogg}"
 INPUT_SIZE=$(stat -f%z "$INPUT" 2>/dev/null || stat -c%s "$INPUT" 2>/dev/null)
 
 echo "Archiving: $INPUT → $OUTPUT"

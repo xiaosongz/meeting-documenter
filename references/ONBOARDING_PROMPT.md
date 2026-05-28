@@ -16,11 +16,17 @@ Probe these in order. Treat the first list as blockers; the second as adapters; 
 
 | Requirement | Check |
 |---|---|
-| `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) set in `.env` | `grep -E '^(GOOGLE\|GEMINI)_API_KEY=' .env` |
+| `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) set in `.env` | see code block below (table cells can't carry `\|` safely) |
 | `ffmpeg` on `$PATH` | `command -v ffmpeg` |
 | `ffprobe` on `$PATH` | `command -v ffprobe` |
 | `uv` on `$PATH` | `command -v uv` |
 | Writable output directory | `test -w "$MEETING_RAW_DIR"` (or chosen path) |
+
+API-key check (the regex alternation can't live in a Markdown table cell, so run this directly):
+
+```bash
+grep -qE '^(GOOGLE|GEMINI)_API_KEY=' .env && echo "API key present" || echo "MISSING API key"
+```
 
 ### Soft requirements (needed for full pipeline; can be disabled per-step)
 

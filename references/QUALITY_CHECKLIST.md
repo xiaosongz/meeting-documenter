@@ -90,7 +90,7 @@ description: "Verification checklist for meeting documentation pipeline. Read th
 ### 8a: Temp Files
 - [ ] `/tmp/meeting_context.txt` removed (prevents stale context contaminating future transcriptions)
 - [ ] Confirmed file no longer exists
-- [ ] Chunk temp files cleaned (pipeline auto-cleans, but verify `/tmp/meeting_chunks_*` if needed)
+- [ ] `/tmp/meeting_chunks_<PID>/` removed (pipeline cleans in its `finally` block; verify for the PID just printed in pipeline output and clean any orphans from older crashes)
 
 ### 8b: Source Audio Backup
 - [ ] `cleanup-source-audio.sh` ran successfully (exit code 0)

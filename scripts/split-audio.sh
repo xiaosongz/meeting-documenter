@@ -43,9 +43,13 @@ if (( TOTAL_DURATION_INT <= TARGET_DURATION + 300 )); then
 fi
 
 # --- Detect silence points ---
+# Note: grep exits 1 when no silence found, which under `set -o pipefail`
+# would abort before the no-silence fallback at lines below. `|| true`
+# absorbs the no-match exit so the silence file stays empty and the
+# hard-split fallback at the per-boundary loop handles it.
 SILENCE_FILE=$(mktemp "${OUTPUT_DIR}/silence_points.XXXXXX")
 ffmpeg -i "$INPUT" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1 \
-  | grep "silence_end" | awk '{print $5}' | sed 's/[^0-9.]//g' > "$SILENCE_FILE"
+  | grep "silence_end" | awk '{print $5}' | sed 's/[^0-9.]//g' > "$SILENCE_FILE" || true
 
 # --- Calculate split points ---
 TOLERANCE=300  # ±5 minutes

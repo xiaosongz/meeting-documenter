@@ -16,6 +16,7 @@ import os
 import sys
 import re
 import json
+import shutil
 import argparse
 import subprocess
 from pathlib import Path
@@ -425,6 +426,12 @@ def resplit_chunk(chunk: AudioChunk, target_duration: int) -> list[AudioChunk]:
 
 def check_truncation(response, chunk_duration_seconds: int) -> bool:
     """Returns True if transcript appears truncated."""
+    # No candidates = safety filter / empty response. Reach here BEFORE
+    # is_transient_failure() in transcribe_with_recovery; guarding inline
+    # keeps the retry loop engaged instead of crashing the pipeline.
+    if not response.candidates:
+        print("   ⚠ No candidates in response (safety filter or empty)")
+        return True
     candidate = response.candidates[0]
     finish_str = str(candidate.finish_reason)
 
@@ -549,9 +556,13 @@ def transcribe_with_retry(client, chunks: list[AudioChunk], model: str,
             ))
         elif chunk.depth >= max_depth:
             if response.text is None:
+                finish_str = (
+                    str(response.candidates[0].finish_reason)
+                    if response.candidates else "no-candidates"
+                )
                 print(f"   ❌ No text after {max_depth} re-splits + "
                       f"{MAX_TRANSIENT_RETRIES} retries "
-                      f"(finish: {response.candidates[0].finish_reason}). Skipping chunk.")
+                      f"(finish: {finish_str}). Skipping chunk.")
             else:
                 actual_ts = extract_last_timestamp(response.text)
                 print(f"   ❌ Still truncated after {max_depth} re-splits. "
@@ -680,71 +691,82 @@ def main():
 
     # ── Step 1: DETECT ──
     original_audio_path = audio_path  # preserve for archival
-    print(f"🎵 Audio: {audio_path.name}")
-    info = get_audio_info(audio_path)
-    print(f"   Duration: {format_duration(info['duration_int'])}")
-    print(f"   Size: {info['file_size'] / 1048576:.1f} MB")
-    print(f"   Format: {info['mime_type']}")
-    print(f"   Model: {args.model}")
-    if context:
-        print(f"   Context: {len(context)} chars")
+    # PID-scoped chunk dir; split_audio() writes here when output_dir omitted.
+    # Cleanup runs in finally below so chunks don't survive pipeline crashes —
+    # meeting audio is private and /tmp persists across reboots on some FS.
+    chunks_base_dir = Path(f"/tmp/meeting_chunks_{os.getpid()}")
+    try:
+        print(f"🎵 Audio: {audio_path.name}")
+        info = get_audio_info(audio_path)
+        print(f"   Duration: {format_duration(info['duration_int'])}")
+        print(f"   Size: {info['file_size'] / 1048576:.1f} MB")
+        print(f"   Format: {info['mime_type']}")
+        print(f"   Model: {args.model}")
+        if context:
+            print(f"   Context: {len(context)} chars")
 
-    # ── Step 1b: PREPARE (trim trailing silence, fix codec/container) ──
-    print(f"\n🔧 Preparing audio...")
-    audio_path, effective_duration = prepare_audio(audio_path, info["duration_int"])
-    if audio_path != original_audio_path:
-        info["duration_int"] = effective_duration
-        info["duration"] = float(effective_duration)
-    else:
-        print(f"   ✅ No preparation needed")
+        # ── Step 1b: PREPARE (trim trailing silence, fix codec/container) ──
+        print(f"\n🔧 Preparing audio...")
+        audio_path, effective_duration = prepare_audio(audio_path, info["duration_int"])
+        if audio_path != original_audio_path:
+            info["duration_int"] = effective_duration
+            info["duration"] = float(effective_duration)
+        else:
+            print(f"   ✅ No preparation needed")
 
-    # ── Step 2: DECIDE ──
-    if info["duration_int"] > CHUNK_THRESHOLD:
-        print(f"\n✂️  Audio exceeds {CHUNK_THRESHOLD}s — splitting at silence points...")
-        chunks = split_audio(audio_path)
-        print(f"   Split into {len(chunks)} chunks")
-    else:
-        print(f"\n📝 Audio under {CHUNK_THRESHOLD}s — single-chunk transcription")
-        chunks = [AudioChunk(path=audio_path, offset_seconds=0,
-                             duration=info["duration_int"])]
+        # ── Step 2: DECIDE ──
+        if info["duration_int"] > CHUNK_THRESHOLD:
+            print(f"\n✂️  Audio exceeds {CHUNK_THRESHOLD}s — splitting at silence points...")
+            chunks = split_audio(audio_path)
+            print(f"   Split into {len(chunks)} chunks")
+        else:
+            print(f"\n📝 Audio under {CHUNK_THRESHOLD}s — single-chunk transcription")
+            chunks = [AudioChunk(path=audio_path, offset_seconds=0,
+                                 duration=info["duration_int"])]
 
-    # ── Step 3-4: TRANSCRIBE with retry ──
-    client = genai.Client(api_key=get_api_key())
-    segments = transcribe_with_retry(client, chunks, args.model, context)
+        # ── Step 3-4: TRANSCRIBE with retry ──
+        client = genai.Client(api_key=get_api_key())
+        segments = transcribe_with_retry(client, chunks, args.model, context)
 
-    # ── Step 5: COMBINE ──
-    print(f"\n📋 Combining {len(segments)} segments...")
-    transcript = combine_segments(segments, audio_path, args.model, args.description)
+        # ── Step 5: COMBINE ──
+        print(f"\n📋 Combining {len(segments)} segments...")
+        transcript = combine_segments(segments, audio_path, args.model, args.description)
 
-    # ── Step 5b: MONOTONICITY CHECK ──
-    transcript, ts_fixes = fix_timestamp_monotonicity(transcript)
-    if ts_fixes > 0:
-        print(f"\n🔧 Fixed {ts_fixes} timestamp regression(s) (Gemini artifact)")
+        # ── Step 5b: MONOTONICITY CHECK ──
+        transcript, ts_fixes = fix_timestamp_monotonicity(transcript)
+        if ts_fixes > 0:
+            print(f"\n🔧 Fixed {ts_fixes} timestamp regression(s) (Gemini artifact)")
 
-    # Write output
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(transcript)
-    print(f"\n✅ Transcript saved: {output_path}")
+        # Write output
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(transcript)
+        print(f"\n✅ Transcript saved: {output_path}")
 
-    # ── Step 6: ARCHIVE (from original, not trimmed) ──
-    if not args.no_archive:
-        archive_to_ogg(original_audio_path)
-    else:
-        print("\n📦 Archival skipped (--no-archive). Use SKILL.md Step 2b for named archive.")
+        # ── Step 6: ARCHIVE (from original, not trimmed) ──
+        if not args.no_archive:
+            archive_to_ogg(original_audio_path)
+        else:
+            print("\n📦 Archival skipped (--no-archive). Use SKILL.md Step 2b for named archive.")
 
-    # ── Step 7: CLEANUP prepared temp files ──
-    if audio_path != original_audio_path and audio_path.exists():
-        audio_path.unlink()
-        print(f"\n🧹 Cleaned up prepared temp file: {audio_path.name}")
-
-    # ── Step 8: REPORT ──
-    total_duration = sum(s.duration for s in segments)
-    print(f"\n{'='*50}")
-    print(f"📊 Pipeline complete")
-    print(f"   Duration: {format_duration(total_duration)}")
-    print(f"   Chunks: {len(segments)}")
-    print(f"   Output: {output_path}")
-    print(f"{'='*50}")
+        # ── Step 7: REPORT ──
+        total_duration = sum(s.duration for s in segments)
+        print(f"\n{'='*50}")
+        print(f"📊 Pipeline complete")
+        print(f"   Duration: {format_duration(total_duration)}")
+        print(f"   Chunks: {len(segments)}")
+        print(f"   Output: {output_path}")
+        print(f"{'='*50}")
+    finally:
+        # ── Step 8: CLEANUP (runs on success and on exception) ──
+        if audio_path != original_audio_path and audio_path.exists():
+            try:
+                audio_path.unlink()
+                print(f"\n🧹 Cleaned up prepared temp file: {audio_path.name}")
+            except OSError as e:
+                print(f"\n⚠ Failed to remove prepared temp file {audio_path}: {e}")
+        if chunks_base_dir.exists():
+            shutil.rmtree(chunks_base_dir, ignore_errors=True)
+            print(f"🧹 Removed chunk dir: {chunks_base_dir}")
 
 
 if __name__ == "__main__":
