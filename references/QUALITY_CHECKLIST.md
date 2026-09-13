@@ -1,101 +1,110 @@
 ---
-description: "Verification checklist for meeting documentation pipeline. Read this in Step 7 to validate all outputs before marking the task complete."
+description: "Verify source fidelity, transcript provenance, summaries, links, and cleanup before completing meeting documentation."
 ---
 
 # Quality Checklist
 
-**VERIFY each item before marking the task complete.**
+Verify applicable items before marking the task complete. Audio-only checks are N/A when starting with an existing transcript. Unknown identity may remain explicitly unresolved; it must not be replaced with a fabricated attendee or assignee.
 
-> **Note on link-form checks:** The `wikilink`-form examples below (`[[Name]]`, `[[raw/...|Full Transcript]]`) are the default. When `LINK_STYLE=markdown`, substitute `[Name](path/Name.md)` form; when `LINK_STYLE=plain`, the check is "name string present" with no link assertion. See `SUMMARY_FORMAT.md § Link Styles` for the substitution table.
->
-> **Note on path checks:** The daily-note path uses `DAILY_NOTE_PATH_FORMAT` (default `%Y/%m-%B/%Y-%m-%d.md`). The project reference-note subdir uses `PROJECT_MEETING_SUBDIR` (default `Meeting`; empty string = project root). Substitute these when verifying.
+Use configured paths, `DAILY_NOTE_PATH_FORMAT`, and `PROJECT_MEETING_SUBDIR` (empty means the project root). Link examples use default `wikilink` form; substitute `markdown` or `plain` per `SUMMARY_FORMAT.md`. For plain text, verify names/paths, not nonexistent clickable links.
 
-## Audio Preparation (Step 1)
+## Metadata and speaker resolution (Steps 0/0b)
 
-- [ ] `scripts/compress-audio.sh` exited with code 0
-- [ ] OGG file exists at expected path (pipeline handles archival to OGG non-destructively; source format can be any supported type)
-- [ ] Original file trashed or archived (check script output for confirmation)
-- [ ] Savings reported (expected ~90-97% reduction for WAV sources)
+- [ ] Date/time/title reflect source evidence or user confirmation; estimates are labeled.
+- [ ] Transcript-only input still received metadata and name resolution.
+- [ ] Names match confirmed canonical names; ambiguous identities remain explicitly uncertain.
+- [ ] Context/keyterms, if used, contain only relevant confirmed information in unique per-run files.
+- [ ] Registries remain private/gitignored; fictional template entries were not treated as real attendees.
 
-## Speaker Name Resolution (Step 0b — MANDATORY)
+## Audio preparation (Step 1 — audio only)
 
-- [ ] All raw names resolved against `references/KNOWN_SPEAKERS.yaml`
-- [ ] No unvalidated aliases used (e.g., a misheard variant should resolve to its canonical name from the registry)
-- [ ] User confirmed the resolved name list via AskUserQuestion
-- [ ] Context file written with canonical names only
-- [ ] Any new speakers added to `KNOWN_SPEAKERS.yaml` after processing
-
-## Recording Archive (Step 2b)
-
-- [ ] Trimmed OGG saved to `${MEETING_RECORDINGS_DIR}/`
-- [ ] Filename matches meeting convention: `YYYY-MM-DD-HHMM Title.ogg`
-- [ ] Duration matches trimmed audio (no trailing silence)
-- [ ] Codec is Vorbis or Opus (OGG container)
-- [ ] Transcript `source:` frontmatter updated to link the recording (form per `LINK_STYLE`)
-- [ ] Summary footer includes recording link
+- [ ] AssemblyAI audio metadata was inspected; the original was submitted without Gemini preparation. For Gemini, pipeline logs show the trailing-silence and codec/container decisions.
+- [ ] Original source is untouched; preparation used working files.
+- [ ] Any intended trim retains the meeting's relevant speech and is documented.
 
 ## Transcript (Step 2)
 
-- [ ] Saved to `${MEETING_RAW_DIR}/`
-- [ ] Filename: `YYYY-MM-DD-HHMM Title-Transcript.md` (SPACE before title)
-- [ ] Contains timestamped speaker-attributed content
-- [ ] If context file used, speakers identified by **canonical names** from KNOWN_SPEAKERS.yaml (not "Speaker 1" and not raw AI-guessed names)
-- [ ] Pipeline reported no truncation retries (or retries succeeded)
-- [ ] Coverage check: transcript timestamps span ≥80% of audio duration
+- [ ] New transcription uses an unused destination; preflight passed without existing transcript/input-alias or known archive collisions. A prior transcript was not replaced.
+- [ ] Transcript exists, is non-empty, and is readable; a new output uses `${MEETING_RAW_DIR}/YYYY-MM-DD-HHMM Title-Transcript.md`.
+- [ ] Timestamped content and speaker labels are present where the source provides them; missing timestamps in a supplied transcript were not invented.
+- [ ] Backend/model provenance is retained for new transcriptions; requested and returned values are not conflated. AAI Requested Language (manual hint or `automatic detection`) is distinct from AAI Detected Language.
+- [ ] Provider failures/retries completed successfully before the output was accepted (audio only); Gemini empty/whitespace-only output was not accepted as a transcript.
+- [ ] Beginning, middle, and end coverage were reviewed against audio when available; gaps are explained (audio only).
+- [ ] A span of at least 80% of audio duration is treated only as a coarse warning heuristic, never proof of completeness or accuracy.
+
+## Speaker-cluster mapping (Step 2.5 — AssemblyAI only)
+
+- [ ] Mappings use explicit dialogue/audio evidence and are checked against the roster.
+- [ ] Original clusters and manual mappings/ambiguities are documented in Diarization Notes.
+- [ ] Split/merged clusters were considered; the expected count was not treated as identity proof.
+- [ ] Unresolved labels remain visible. No person was invented to fill a cluster.
+
+## Transcript authenticity (Step 7 — audio only)
+
+Generative transcription can produce plausible speech in quiet stretches or repeat text while omitting real dialogue. Speech-to-text output can also contain errors and omissions. Check both backends; context names and timestamp span do not establish authenticity.
+
+- [ ] Reviewed cyclic greeting/farewell passages or dialogue that appears to recite the context roster.
+- [ ] Reviewed repeated lines (for example, five consecutive copies), frozen timestamps, implausibly dense speech, or unexplained jumps. These are review triggers, not automatic deletion rules.
+- [ ] Compared suspicious windows with audio, including interior silence or low-volume passages; plausible timestamps alone did not clear them.
+- [ ] Corrupt windows were corrected/retranscribed and rechecked, or clearly excluded with a stated limitation; the source transcript was preserved.
+- [ ] Summary decisions/tasks use supported content only. A replacement backend's output was also checked.
+- [ ] If audio is unavailable, audio authenticity is explicitly unverified rather than claimed to pass.
+
+## Recording archive (Step 2b — audio only, when requested)
+
+- [ ] Only one archival path was used; built-in archival was not combined with a second redundant archive.
+- [ ] Named OGG exists at `${MEETING_RECORDINGS_DIR}/YYYY-MM-DD-HHMM Title.ogg` after title confirmation.
+- [ ] Full decode succeeds; codec is Vorbis or Opus; duration matches the intended source interval. Staged output was published without replacing an existing file, or the exact same real OGG path was verified as a no-op.
+- [ ] Transcript `source:` points to the archive in `LINK_STYLE` form without losing transcription provenance.
+- [ ] Recording links appear only when the linked recording exists.
 
 ## Summary (Step 4)
 
-- [ ] Saved to `${MEETING_NOTES_DIR}/`
-- [ ] Filename: `YYYY-MM-DD-HHMM Title.md` (SPACE before title)
-- [ ] YAML frontmatter includes: title, date, type, tags, attendees, meeting_type, meeting_outcome
-- [ ] `description` field present (~150 chars, adds info beyond title)
-- [ ] Attendees use the link form set by `LINK_STYLE` (default `wikilink` → `"[[Name]]"`; see SUMMARY_FORMAT.md § Link Styles)
-- [ ] Sections present: Executive Summary, Key Decisions, Action Items, Parking Lot, Topics, Follow-Up
-- [ ] Action items have: checkbox format, `[assignee::]`, `[project::]`, `[due::]` (when explicit)
-- [ ] Parking Lot items have NO owner (deferred items only)
-- [ ] Footer links to raw transcript
+- [ ] Saved to `${MEETING_NOTES_DIR}/YYYY-MM-DD-HHMM Title.md`.
+- [ ] Valid frontmatter includes title, description, date, type, tags, attendees, meeting_type, and meeting_outcome.
+- [ ] Description states the key outcome; decisions reflect actual decisions rather than proposals.
+- [ ] Required sections are present: Executive Summary, Key Decisions, Action Items, Parking Lot, Topics, Follow-Up.
+- [ ] Every action item is an explicit assignment/commitment, has a supported owner, and remains unresolved at meeting end.
+- [ ] Later completion, cancellation, or reassignment was reconciled before finalizing the task list.
+- [ ] Original deadline wording is preserved. `[due:: YYYY-MM-DD]` is included only when the stated date resolves unambiguously; absent/ambiguous dates were not invented.
+- [ ] Action items use checkbox format and `[assignee::]`; `[project::]` appears when applicable. No fabricated `Team`/`TBD` owners.
+- [ ] Unassigned requests remain unresolved discussion/follow-up, and only explicitly deferred topics enter Parking Lot.
+- [ ] Footer links to the actual transcript; recording link omitted when no archive exists.
 
-## Daily Note (Step 5 — MANDATORY)
+## Daily note and carryover (Steps 5/5b)
 
-- [ ] Daily note exists at `${DAILY_NOTES_DIR}/$(LC_TIME=C date "+${DAILY_NOTE_PATH_FORMAT:-%Y/%m-%B/%Y-%m-%d.md}")` (LC_TIME=C pins month name to English)
-- [ ] Meetings section has table
-- [ ] New row added with correct transcript and summary links (form per `LINK_STYLE`)
-- [ ] **Read the daily note to confirm the row was added**
+- [ ] Daily-note path uses the meeting date and configured format/locale.
+- [ ] Entry fits existing Meetings table columns and was not duplicated on a rerun.
+- [ ] Transcript/summary links use the configured form; table has a preceding blank line.
+- [ ] Carryover completions, if suggested, are supported by actual resolution and approved before edits.
+- [ ] Read back the note to verify the saved entry.
 
-## Carryover Cross-Reference (Step 5b)
+## Project references (Step 6 — when confirmed)
 
-- [ ] Daily note Carryover section scanned for tasks addressed in meeting
-- [ ] Resolved carryover tasks suggested to user (or noted as "none applicable")
+- [ ] Reference path uses the confirmed project and validated single-segment/empty subdir.
+- [ ] Each applicable project has one reference with scoped decisions/tasks and links to the canonical full summary/transcript.
+- [ ] References agree with the canonical summary; no new task or deadline was introduced in a project copy.
+- [ ] Dashboard Recent Meetings entry was updated if present, with `updated:` changed only when edited.
+- [ ] Read back references and Dashboard edits; reruns did not create duplicate entries.
 
-## Project Linking (Step 6 — when project identified)
+## Files and links (Step 7)
 
-- [ ] Reference note created in the per-project reference directory — `${PROJECTS_DIR}/{Project}/${PROJECT_MEETING_SUBDIR-Meeting}/` when `PROJECT_MEETING_SUBDIR` is set, otherwise the project root `${PROJECTS_DIR}/{Project}/`
-- [ ] Contains links to summary and transcript (form per `LINK_STYLE`)
-- [ ] Includes quick reference (executive summary, action items, key decisions)
-- [ ] Dashboard updated if it has a Recent Meetings section
-- [ ] Dashboard `updated:` frontmatter field bumped to today's date
-- [ ] **Read the reference note to confirm links are correct**
-- [ ] **Multi-project**: If meeting spans multiple projects, a reference note exists for each project in its per-project reference directory (`${PROJECT_MEETING_SUBDIR-Meeting}/` subdir if set, otherwise the project root) with project-scoped content
+- [ ] All output files exist and are non-empty; frontmatter is valid.
+- [ ] Note and attendee links resolve in the chosen `LINK_STYLE`; Markdown links are relative to the containing note.
+- [ ] Assignee names match supported canonical identities; unresolved transcript labels are not false person-note links.
+- [ ] Summary, transcript, daily note, and references point to the intended files after any rename.
 
-## Link Validation (Step 7)
+## Cleanup and original preservation (Step 8)
 
-- [ ] All links use the form set by `LINK_STYLE` (default `wikilink`: `[[path/to/note|Display Text]]`; `markdown`: `[Display Text](path/to/note.md)`; `plain`: bare name with no link)
-- [ ] All created files exist and are non-empty
-- [ ] Attendee links match the canonical entry from `KNOWN_SPEAKERS.yaml` (wikilink in `wikilink:` field; same canonical_name otherwise)
-- [ ] All `[assignee:: Name]` values match the canonical names used in attendees
-- [ ] No placeholder names remain as attendees/assignees. Match per `LINK_STYLE`: `wikilink` → `[[Unknown]]`/`[[TBD]]`/`[[Person 1]]`; `markdown` → `[Unknown](`/`[TBD](`/`[Person 1](`; `plain` → bare `Unknown`/`TBD`/`Person 1` appearing as a YAML attendee value or `[assignee:: ...]` value (NOT as substring in topic prose, which may legitimately mention the words)
+- [ ] This run's private context/keyterms and working files were removed after use.
+- [ ] Pipeline exited; an interrupted run has no unaccounted child process or temporary audio directory.
+- [ ] Original recording is still at its source path, or a verified backup exists at the reported destination after an authorized move.
+- [ ] Cleanup helper, if used, completed successfully; an existing destination was not assumed to contain this source.
+- [ ] No unrelated same-stem audio was removed as a presumed duplicate.
+- [ ] Final response names the created outputs and any material unresolved identity/content limitation.
 
-## Cleanup (Step 8)
+## Testing repository changes
 
-### 8a: Temp Files
-- [ ] `/tmp/meeting_context.txt` removed (prevents stale context contaminating future transcriptions)
-- [ ] Confirmed file no longer exists
-- [ ] `/tmp/meeting_chunks_<PID>/` removed (pipeline cleans in its `finally` block; verify for the PID just printed in pipeline output and clean any orphans from older crashes)
-
-### 8b: Source Audio Backup
-- [ ] `cleanup-source-audio.sh` ran successfully (exit code 0)
-- [ ] OGG archive verified (decodable, vorbis codec, duration > 0)
-- [ ] Original moved to `${MEETING_AUDIO_BACKUP_DIR}/YYYY-MM/`
-- [ ] Backup filename includes meeting name + both timestamps: `YYYY-MM-DD-HHMM Title (rec-HHMM).ext`
-- [ ] Pipeline duplicate OGG removed from vault root (if it existed)
-- [ ] No `Recording *.m4a` or `Recording *.ogg` files remain in vault root for this meeting
+- [ ] Automated tests use synthetic/public fixtures and mocked provider responses; no private recording was uploaded as a smoke test.
+- [ ] No private registries, transcripts, recordings, provider identifiers, local paths, or credentials were added to tracked fixtures/logs.
+- [ ] Any authorized live test is explicitly reported separately from offline checks, with its actual limits.

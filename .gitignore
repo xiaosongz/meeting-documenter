@@ -21,6 +21,12 @@ backups/
 # OS
 .DS_Store
 
+# R session artifacts
+.Rhistory
+.RData
+.Rapp.history
+.Rproj.user/
+
 # Audio (in case someone tests locally)
 *.m4a
 *.mp3
@@ -28,4 +34,12 @@ backups/
 *.ogg
 *.flac
 *.aac
+*.aiff
 *.webm
+
+# Local transcripts and generated notes
+*-Transcript.md
+MeetingNotes/
+recordings/
+raw/
+*.log

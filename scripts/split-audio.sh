@@ -43,13 +43,24 @@ if (( TOTAL_DURATION_INT <= TARGET_DURATION + 300 )); then
 fi
 
 # --- Detect silence points ---
-# Note: grep exits 1 when no silence found, which under `set -o pipefail`
-# would abort before the no-silence fallback at lines below. `|| true`
-# absorbs the no-match exit so the silence file stays empty and the
-# hard-split fallback at the per-boundary loop handles it.
+# grep exits 1 when no silence is found; under `set -o pipefail` that would
+# abort before the no-silence fallback below. We want to absorb ONLY that
+# benign case — not a real ffmpeg decode failure. So disable pipefail just for
+# this pipeline (last stage `sed` exits 0 on empty input, swallowing grep's
+# no-match), then inspect ffmpeg's own exit via PIPESTATUS[0] and fail fast if
+# ffmpeg actually choked. A blanket `|| true` here would silently hard-split a
+# file ffmpeg can't even read, surfacing a confusing per-segment error later.
 SILENCE_FILE=$(mktemp "${OUTPUT_DIR}/silence_points.XXXXXX")
+set +o pipefail
 ffmpeg -i "$INPUT" -af silencedetect=noise=-30dB:d=1.0 -f null - 2>&1 \
-  | grep "silence_end" | awk '{print $5}' | sed 's/[^0-9.]//g' > "$SILENCE_FILE" || true
+  | grep "silence_end" | awk '{print $5}' | sed 's/[^0-9.]//g' > "$SILENCE_FILE"
+ffmpeg_rc=${PIPESTATUS[0]}
+set -o pipefail
+if (( ffmpeg_rc != 0 )); then
+  echo "FAIL: ffmpeg silencedetect failed (exit ${ffmpeg_rc}) on: $INPUT" >&2
+  rm -f "$SILENCE_FILE"
+  exit 1
+fi
 
 # --- Calculate split points ---
 TOLERANCE=300  # ±5 minutes

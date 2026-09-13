@@ -2,34 +2,30 @@
 """
 Meeting Transcription Pipeline
 -------------------------------
-Full pipeline: detect audio → decide chunking → transcribe via Gemini →
-detect truncation with auto-retry → combine segments → archive to OGG.
+Transcribe via AssemblyAI (default) or Gemini (opt-in), preserve speaker
+and model provenance, and optionally archive to an explicit directory.
 
 Usage:
     transcribe_pipeline.py <audio-path> [--output <path>] [--context-file <path>] [--model <model>]
 
 Environment:
-    GOOGLE_API_KEY or GEMINI_API_KEY must be set (loaded by transcribe.sh from .env)
+    AssemblyAI: ASSEMBLYAI_API_KEY
+    Gemini: GOOGLE_API_KEY or GEMINI_API_KEY
+    transcribe.sh loads the configured per-user .env, never an implicit ~/.env.
 """
 
 import os
 import sys
 import re
 import json
-import shutil
+import time
+import tempfile
+import math
 import argparse
 import subprocess
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
-
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    print("Error: google-genai package not installed. Run transcribe.sh to auto-install.")
-    sys.exit(1)
-
 
 # ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -37,10 +33,12 @@ SKILL_DIR = Path(__file__).parent.parent.resolve()
 SPLIT_SCRIPT = SKILL_DIR / "scripts" / "split-audio.sh"
 ARCHIVE_SCRIPT = SKILL_DIR / "scripts" / "compress-audio.sh"
 
-MAX_OUTPUT_TOKENS = 65536  # gemini-3-flash-preview hard cap
+MAX_OUTPUT_TOKENS = 65536  # Gemini Flash output cap
 MAX_INLINE_SIZE = 20 * 1024 * 1024  # 20MB — above this, use Files API
 CHUNK_THRESHOLD = 3600  # 60 minutes — split if longer
-DEFAULT_MODEL = "gemini-3-flash-preview"
+DEFAULT_MODEL = "gemini-2.5-flash"
+ASSEMBLYAI_BASE = "https://api.assemblyai.com"
+ASSEMBLYAI_MODELS = ["universal-3-5-pro"]
 
 SUPPORTED_FORMATS = {
     ".ogg": "audio/ogg", ".mp3": "audio/mp3", ".wav": "audio/wav",
@@ -289,7 +287,7 @@ def get_compatible_extension(codec: str, current_ext: str) -> str:
     return target
 
 
-def prepare_audio(audio_path: Path, duration_seconds: int) -> tuple[Path, int]:
+def prepare_audio(audio_path: Path, duration_seconds: int, temp_dir: Path) -> tuple[Path, int]:
     """Detect trailing silence and trim; fix codec/container mismatches.
 
     This step runs automatically before chunking/transcription to:
@@ -348,7 +346,7 @@ def prepare_audio(audio_path: Path, duration_seconds: int) -> tuple[Path, int]:
         return audio_path, duration_seconds
 
     # --- Create prepared file (stream copy first, re-encode as fallback) ---
-    prepared_path = Path(f"/tmp/prepared_{os.getpid()}_{audio_path.stem}{target_ext}")
+    prepared_path = temp_dir / f"prepared{target_ext}"
 
     cmd = ["ffmpeg", "-v", "error", "-i", str(audio_path)]
     if needs_trim:
@@ -359,6 +357,7 @@ def prepare_audio(audio_path: Path, duration_seconds: int) -> tuple[Path, int]:
     if result.returncode != 0:
         # Stream copy failed — fall back to re-encode as OGG Vorbis
         print(f"   ⚠ Stream copy failed, re-encoding to OGG...")
+        prepared_path.unlink(missing_ok=True)
         prepared_path = prepared_path.with_suffix(".ogg")
         cmd = ["ffmpeg", "-v", "error", "-i", str(audio_path)]
         if needs_trim:
@@ -368,6 +367,7 @@ def prepare_audio(audio_path: Path, duration_seconds: int) -> tuple[Path, int]:
         if result.returncode != 0:
             print(f"   ❌ Re-encode failed: {result.stderr.strip()}")
             print(f"   Proceeding with original audio")
+            prepared_path.unlink(missing_ok=True)
             return audio_path, duration_seconds
 
     effective_duration = trim_to if needs_trim else duration_seconds
@@ -384,10 +384,8 @@ def prepare_audio(audio_path: Path, duration_seconds: int) -> tuple[Path, int]:
 # ─── Splitting ──────────────────────────────────────────────────────────────
 
 def split_audio(audio_path: Path, target_duration: int = 3000,
-                output_dir: Path | None = None) -> list[AudioChunk]:
-    """Split audio using silence-aware split-audio.sh."""
-    if output_dir is None:
-        output_dir = Path(f"/tmp/meeting_chunks_{os.getpid()}")
+                *, output_dir: Path) -> list[AudioChunk]:
+    """Split audio inside the caller-owned private temporary directory."""
 
     result = subprocess.run(
         [str(SPLIT_SCRIPT), str(audio_path),
@@ -411,10 +409,10 @@ def split_audio(audio_path: Path, target_duration: int = 3000,
     ]
 
 
-def resplit_chunk(chunk: AudioChunk, target_duration: int) -> list[AudioChunk]:
+def resplit_chunk(chunk: AudioChunk, target_duration: int, *, temp_dir: Path) -> list[AudioChunk]:
     """Re-split a chunk at a shorter target duration for truncation recovery."""
-    output_dir = chunk.path.parent / f"resplit_d{chunk.depth + 1}"
-    sub_chunks = split_audio(chunk.path, target_duration, output_dir)
+    output_dir = Path(tempfile.mkdtemp(prefix="resplit_", dir=temp_dir))
+    sub_chunks = split_audio(chunk.path, target_duration, output_dir=output_dir)
     # Adjust offsets relative to original audio and increment depth
     for sc in sub_chunks:
         sc.offset_seconds += chunk.offset_seconds
@@ -489,6 +487,8 @@ def is_transient_failure(response) -> bool:
 def transcribe_chunk(client, chunk: AudioChunk, model: str,
                      context: str | None) -> str:
     """Transcribe a single audio chunk via Gemini API."""
+    from google.genai import types
+
     audio_path = chunk.path
     file_size = audio_path.stat().st_size
     mime_type = SUPPORTED_FORMATS.get(audio_path.suffix.lower(), "audio/mp3")
@@ -534,7 +534,7 @@ def transcribe_chunk(client, chunk: AudioChunk, model: str,
 
 
 def transcribe_with_retry(client, chunks: list[AudioChunk], model: str,
-                          context: str | None, max_depth: int = 2
+                          context: str | None, max_depth: int = 2, *, temp_dir: Path
                           ) -> list[TranscriptSegment]:
     """Transcribe chunks with transient-error retry and truncation re-split."""
     results = []
@@ -588,9 +588,9 @@ def transcribe_with_retry(client, chunks: list[AudioChunk], model: str,
         else:
             new_target = chunk.duration // 2
             print(f"   🔄 Re-splitting at {format_duration(new_target)} target...")
-            sub_chunks = resplit_chunk(chunk, new_target)
+            sub_chunks = resplit_chunk(chunk, new_target, temp_dir=temp_dir)
             results.extend(
-                transcribe_with_retry(client, sub_chunks, model, context, max_depth)
+                transcribe_with_retry(client, sub_chunks, model, context, max_depth, temp_dir=temp_dir)
             )
 
     return results
@@ -604,19 +604,16 @@ def combine_segments(segments: list[TranscriptSegment], audio_path: Path,
     now = datetime.now()
     total_dur = sum(s.duration for s in segments)
 
-    # Build description line for frontmatter
-    desc_line = ""
-    if description:
-        desc_line = f'\ndescription: "{description}"'
-    else:
-        # Auto-generate a minimal description
-        desc_line = f'\ndescription: "Transcript of {audio_path.stem}, {format_duration(total_dur)}, {len(segments)} segment(s)"'
+    description = description or (
+        f"Transcript of {audio_path.stem}, {format_duration(total_dur)}, {len(segments)} segment(s)"
+    )
+    desc_line = "\ndescription: " + json.dumps(description, ensure_ascii=False)
 
     header = f"""---
-title: "Meeting Transcript - {audio_path.stem}"
+title: {json.dumps("Meeting Transcript - " + audio_path.stem, ensure_ascii=False)}
 date: {now.strftime('%Y-%m-%d')}
 type: transcript
-source: {audio_path.name}
+source: {json.dumps(audio_path.name, ensure_ascii=False)}
 created: {now.strftime('%Y-%m-%d')}{desc_line}
 tags:
   - "#transcript"
@@ -643,14 +640,27 @@ tags:
 
 # ─── Archival ───────────────────────────────────────────────────────────────
 
-def archive_to_ogg(audio_path: Path) -> Path | None:
-    """Create OGG archive copy if source isn't already OGG."""
-    if audio_path.suffix.lower() == ".ogg":
-        print("\n📦 Already OGG, skipping archival.")
-        return None
+def archive_destination(audio_path: Path, output_dir: Path) -> Path:
+    """Preflight without writes; only an exact source OGG path may be reused."""
+    ogg_path = output_dir.expanduser().resolve() / (audio_path.stem + ".ogg")
+    in_place = audio_path.suffix.lower() == ".ogg" and ogg_path == audio_path.resolve()
+    if ogg_path.is_symlink() or (ogg_path.exists() and not in_place):
+        raise FileExistsError("Archive destination already exists; choose a different directory or named output.")
+    return ogg_path
 
-    ogg_path = audio_path.with_suffix(".ogg")
-    print(f"\n📦 Archiving to OGG: {ogg_path.name}")
+
+def write_transcript(output_path: Path, transcript: str) -> None:
+    """Exclusive creation also rejects a file or symlink created after preflight."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("x", encoding="utf-8") as output:
+        output.write(transcript)
+
+
+def archive_to_ogg(audio_path: Path, output_dir: Path) -> Path:
+    """Create a verified OGG archive without replacing existing files."""
+    ogg_path = archive_destination(audio_path, output_dir)
+
+    print(f"\n📦 Archiving to OGG: {ogg_path}")
     result = subprocess.run(
         [str(ARCHIVE_SCRIPT), str(audio_path), "--output", str(ogg_path)],
         capture_output=True, text=True, timeout=600
@@ -658,29 +668,260 @@ def archive_to_ogg(audio_path: Path) -> Path | None:
     if result.returncode == 0:
         print(result.stdout.strip())
         return ogg_path
+    raise RuntimeError("OGG archival failed; the transcript and original audio have been preserved.")
+
+
+# ─── AssemblyAI Backend (default) ──────────────────────
+
+def _ms_to_ts(ms: int) -> str:
+    """Milliseconds → MM:SS (or H:MM:SS past an hour), matching the Gemini format."""
+    s = int(ms // 1000)
+    if s >= 3600:
+        return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+    return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def _aai_format_transcript(utterances: list, audio_path: Path,
+                           description: str | None,
+                           metadata: dict | None = None) -> str:
+    """Format AssemblyAI utterances into the same markdown shape as the Gemini path.
+
+    Speakers stay as acoustic clusters (Speaker A/B/C/D) — AssemblyAI does
+    diarization, not voice-ID. SKILL.md Step 2.5 maps clusters → names.
+    """
+    now = datetime.now()
+    total_dur = int(utterances[-1]["end"] / 1000) if utterances else 0
+    n_speakers = len({u["speaker"] for u in utterances})
+    metadata = metadata or {}
+    transcript_id = metadata.get("id") or "unknown"
+    submitted_models = metadata.get("speech_models") or []
+    submitted_models_text = ", ".join(submitted_models) if submitted_models else "not returned"
+    language_code = metadata.get("language_code") or "unknown"
+    language_confidence = metadata.get("language_confidence")
+    speakers_expected = metadata.get("speakers_expected")
+    language_text = language_code
+    if language_confidence is not None:
+        language_text += f" ({language_confidence:.4f})"
+    expected_text = str(speakers_expected) if speakers_expected is not None else "not set"
+
+    description = description or (
+        f"Transcript of {audio_path.stem}, {format_duration(total_dur)}, "
+        f"AssemblyAI pre-recorded STT ({n_speakers} diarized speakers)"
+    )
+    desc_line = "\ndescription: " + json.dumps(description, ensure_ascii=False)
+    requested_models_text = ", ".join(metadata.get("requested_speech_models") or submitted_models) or "not recorded"
+    model_used = metadata.get("speech_model_used") or "not returned"
+    requested_language = metadata.get("requested_language_code") or "not recorded"
+
+    header = f"""---
+title: {json.dumps("Meeting Transcript - " + audio_path.stem, ensure_ascii=False)}
+date: {now.strftime('%Y-%m-%d')}
+type: transcript
+source: {json.dumps(audio_path.name, ensure_ascii=False)}
+created: {now.strftime('%Y-%m-%d')}{desc_line}
+tags:
+  - "#transcript"
+  - "#meeting"
+---
+
+# Meeting Transcript
+
+**Source:** `{audio_path.name}`
+**Transcribed:** {now.strftime('%Y-%m-%d %H:%M')}
+**Tool:** AssemblyAI pre-recorded STT (speaker diarization)
+**AAI Transcript ID:** `{transcript_id}`
+**AAI Submitted Models:** `{requested_models_text}`
+**AAI Returned Models:** `{submitted_models_text}`
+**AAI Model Used:** `{model_used}`
+**AAI Requested Language:** `{requested_language}`
+**AAI Detected Language:** `{language_text}`
+**AAI Speakers Expected:** `{expected_text}`
+**Duration:** ~{format_duration(total_dur)} · {len(utterances)} utterances · {n_speakers} speaker clusters
+
+> [!note] Speakers below are acoustic clusters (Speaker A/B/C/D), not names.
+> AssemblyAI does diarization, not voice identification. Map clusters → real
+> names using the attendee roster + content cues (SKILL.md Step 2.5) before
+> writing the summary.
+
+---
+
+"""
+    body = "\n\n".join(
+        f"**[{_ms_to_ts(u['start'])}] Speaker {u['speaker']}:** {u['text'].strip()}"
+        for u in utterances
+    )
+    return header + body + "\n"
+
+
+def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
+                           context: str | None) -> None:
+    """Transcribe via AssemblyAI pre-recorded API (raw HTTP per integration guide).
+
+    Sends the original file in one request; Gemini preparation and splitting
+    are not applied. Provider file limits apply.
+    """
+    try:
+        import requests
+    except ImportError:
+        print("Error: requests not installed. Run transcribe.sh (auto-installs).")
+        sys.exit(1)
+
+    key = os.environ.get("ASSEMBLYAI_API_KEY")
+    if not key:
+        print("Error: ASSEMBLYAI_API_KEY not set. Set it in your environment or configured .env file.")
+        sys.exit(1)
+    headers = {"authorization": key}  # raw key, not a Bearer token
+
+    info = get_audio_info(audio_path)
+    print(f"🎵 Audio: {audio_path.name}")
+    print(f"   Duration: {format_duration(info['duration_int'])}")
+    print(f"   Size: {info['file_size'] / 1048576:.1f} MB")
+    speech_models = args.aai_speech_models or ASSEMBLYAI_MODELS
+    print(f"   Backend: AssemblyAI ({' → '.join(speech_models)})")
+
+    # Optional high-precision keyterm boost (names + domain jargon)
+    keyterms: list[str] = []
+    if args.keyterms_file:
+        kt_path = args.keyterms_file.expanduser().resolve()
+        if kt_path.exists():
+            keyterms = [ln.strip() for ln in kt_path.read_text().splitlines() if ln.strip()]
+            print(f"   Keyterms: {len(keyterms)} terms")
+        else:
+            print(f"   Warning: keyterms file not found: {kt_path}")
+    if context:
+        print(f"   Prompt context: {len(context)} chars")
+
+    # 1) Upload the raw binary body, not multipart form data.
+    print("\n⬆️  Uploading (raw binary)...")
+    with open(audio_path, "rb") as f:
+        up = requests.post(f"{ASSEMBLYAI_BASE}/v2/upload", headers=headers,
+                           data=f, timeout=600)
+    if up.status_code >= 400:
+        raise RuntimeError(f"AssemblyAI upload failed (HTTP {up.status_code}).")
+    upload_url = up.json()["upload_url"]
+
+    # 2) Submit the explicitly selected speech models.
+    body = {
+        "audio_url": upload_url,
+        "speech_models": speech_models,
+        "speaker_labels": True,
+    }
+    if args.language_code:
+        body["language_code"] = args.language_code
     else:
-        print(f"   Warning: OGG archival failed: {result.stderr.strip()}")
-        return None
+        body["language_detection"] = True
+    if args.speakers_expected is not None:
+        body["speakers_expected"] = args.speakers_expected
+    if keyterms:
+        body["keyterms_prompt"] = keyterms
+    if context and not keyterms:
+        body["prompt"] = context  # natural-language conditioning (U3 Pro)
+    elif context and keyterms:
+        print("   Note: omitting AAI prompt because keyterms_prompt and prompt cannot be combined.")
+    speaker_msg = (
+        f", speakers_expected={args.speakers_expected}"
+        if args.speakers_expected is not None
+        else ""
+    )
+    print(f"📤 Submitting ({' → '.join(speech_models)}, speaker_labels{speaker_msg})...")
+    sub = requests.post(f"{ASSEMBLYAI_BASE}/v2/transcript",
+                        headers={**headers, "content-type": "application/json"},
+                        json=body, timeout=60)
+    if sub.status_code >= 400:
+        raise RuntimeError(f"AssemblyAI submission failed (HTTP {sub.status_code}).")
+    tid = sub.json()["id"]
+    print(f"   Transcript ID: {tid}")
+
+    # 3) Poll
+    print("⏳ Polling...")
+    t0 = time.monotonic()
+    while True:
+        remaining = args.aai_poll_timeout - (time.monotonic() - t0)
+        if remaining <= 0:
+            raise TimeoutError("AssemblyAI polling timed out; the remote job may still be running.")
+        poll = requests.get(f"{ASSEMBLYAI_BASE}/v2/transcript/{tid}",
+                            headers=headers, timeout=min(60, remaining))
+        if poll.status_code >= 400:
+            raise RuntimeError(f"AssemblyAI polling failed (HTTP {poll.status_code}).")
+        r = poll.json()
+        st = r.get("status")
+        if st == "completed":
+            print(f"   ✅ Completed in {time.monotonic() - t0:.0f}s")
+            break
+        if st == "error":
+            raise RuntimeError("AssemblyAI transcription failed; inspect the job in your provider dashboard.")
+        if st not in {"queued", "processing"}:
+            raise RuntimeError("AssemblyAI returned an unexpected job status.")
+        time.sleep(min(5, max(0, args.aai_poll_timeout - (time.monotonic() - t0))))
+
+    utterances = r.get("utterances") or []
+    if not utterances:
+        raise RuntimeError("AssemblyAI returned no diarized speech; no transcript was written.")
+    speakers = sorted({u["speaker"] for u in utterances})
+    print(f"   Utterances: {len(utterances)} | speaker clusters: {len(speakers)} {speakers}")
+    print(f"   Detected language: {r.get('language_code')} ({r.get('language_confidence')})")
+    print(f"   Submitted models returned by AAI: {r.get('speech_models')}")
+    r["requested_speech_models"] = speech_models
+    r["requested_language_code"] = args.language_code or "automatic detection"
+    r["speakers_expected"] = args.speakers_expected
+
+    transcript = _aai_format_transcript(utterances, audio_path, args.description, r)
+    write_transcript(output_path, transcript)
+    print(f"\n✅ Transcript saved: {output_path}")
+
+    if args.archive_dir is not None:
+        archive_to_ogg(audio_path, args.archive_dir)
+    else:
+        print("\n📦 Archival skipped (no --archive-dir). Use SKILL.md Step 2b for named archive.")
+
+    print(f"\n{'=' * 50}")
+    print(f"📊 AssemblyAI backend complete")
+    print(f"   Speakers: {len(speakers)} clusters (map A/B/C/D → names in Step 2.5)")
+    print(f"   Output: {output_path}")
+    print(f"{'=' * 50}")
 
 
 # ─── Main Pipeline ──────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Transcribe meeting audio with automatic chunking and truncation recovery"
+        description="Transcribe meeting audio with automatic chunking and truncation recovery",
+        allow_abbrev=False
     )
     parser.add_argument("audio_file", type=Path, help="Path to audio file")
     parser.add_argument("-o", "--output", type=Path, default=None,
                         help="Output transcript path")
+    parser.add_argument("--backend", choices=["assemblyai", "gemini"], default="assemblyai",
+                        help="Transcription backend (default: assemblyai)")
+    parser.add_argument("--keyterms-file", type=Path, default=None,
+                        help="AssemblyAI: newline-separated names and domain terms")
+    parser.add_argument("--aai-speech-models", nargs="+", default=None,
+                        help="AssemblyAI: ordered speech model list")
+    parser.add_argument("--speakers-expected", type=int, default=None,
+                        help="AssemblyAI: expected speaker count")
+    parser.add_argument("--language-code", default=None,
+                        help="AssemblyAI: language code; omit for automatic detection")
+    parser.add_argument("--aai-poll-timeout", type=float, default=3600,
+                        help="AssemblyAI: maximum polling time in seconds (default: 3600)")
     parser.add_argument("--context-file", type=Path, default=None,
-                        help="Speaker/domain context file for Gemini")
+                        help="Speaker/domain context: Gemini prefix or AssemblyAI prompt")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help=f"Gemini model (default: {DEFAULT_MODEL})")
     parser.add_argument("--description", default=None,
                         help="Optional description for transcript frontmatter (~150 chars)")
-    parser.add_argument("--no-archive", action="store_true",
-                        help="Skip built-in OGG archival (use when SKILL.md Step 2b handles it)")
+    archive_options = parser.add_mutually_exclusive_group()
+    archive_options.add_argument("--archive-dir", type=Path, default=None,
+                                 help="Opt in to OGG archival in this directory")
+    archive_options.add_argument("--no-archive", action="store_true",
+                                 help="Compatibility option; archival is already off by default")
     args = parser.parse_args()
+    if args.aai_poll_timeout <= 0 or not math.isfinite(args.aai_poll_timeout):
+        parser.error("--aai-poll-timeout must be a positive finite number")
+    if args.speakers_expected is not None and args.speakers_expected < 1:
+        parser.error("--speakers-expected must be positive")
+    for context_path in (args.context_file, args.keyterms_file):
+        if context_path is not None and not context_path.expanduser().is_file():
+            parser.error("The specified context or keyterms file does not exist")
 
     audio_path = args.audio_file.expanduser().resolve()
     if not audio_path.exists():
@@ -689,9 +930,17 @@ def main():
 
     output_path = args.output
     if output_path:
-        output_path = output_path.expanduser().resolve()
+        output_path = output_path.expanduser().absolute()
     else:
         output_path = audio_path.with_name(audio_path.stem + "-Transcript.md")
+
+    # Preserve previous transcripts and source aliases; do this before provider work.
+    if output_path.exists() or output_path.is_symlink():
+        raise FileExistsError("Transcript destination already exists; choose a new output path.")
+    if args.archive_dir is not None:
+        archive_path = archive_destination(audio_path, args.archive_dir)
+        if archive_path == output_path.resolve():
+            raise ValueError("Transcript and archive destinations must be distinct.")
 
     # Load context
     context = None
@@ -702,13 +951,14 @@ def main():
         else:
             print(f"Warning: Context file not found: {ctx_path}")
 
-    # ── Step 1: DETECT ──
-    original_audio_path = audio_path  # preserve for archival
-    # PID-scoped chunk dir; split_audio() writes here when output_dir omitted.
-    # Cleanup runs in finally below so chunks don't survive pipeline crashes —
-    # meeting audio is private and /tmp persists across reboots on some FS.
-    chunks_base_dir = Path(f"/tmp/meeting_chunks_{os.getpid()}")
-    try:
+    if args.backend == "assemblyai":
+        run_assemblyai_backend(args, audio_path, output_path, context)
+        return
+
+    # Own all prepared audio and retry chunks from before the first write.
+    original_audio_path = audio_path
+    with tempfile.TemporaryDirectory(prefix="meeting_documenter_") as temp_name:
+        temp_dir = Path(temp_name)
         print(f"🎵 Audio: {audio_path.name}")
         info = get_audio_info(audio_path)
         print(f"   Duration: {format_duration(info['duration_int'])}")
@@ -720,7 +970,7 @@ def main():
 
         # ── Step 1b: PREPARE (trim trailing silence, fix codec/container) ──
         print(f"\n🔧 Preparing audio...")
-        audio_path, effective_duration = prepare_audio(audio_path, info["duration_int"])
+        audio_path, effective_duration = prepare_audio(audio_path, info["duration_int"], temp_dir)
         if audio_path != original_audio_path:
             info["duration_int"] = effective_duration
             info["duration"] = float(effective_duration)
@@ -730,7 +980,7 @@ def main():
         # ── Step 2: DECIDE ──
         if info["duration_int"] > CHUNK_THRESHOLD:
             print(f"\n✂️  Audio exceeds {CHUNK_THRESHOLD}s — splitting at silence points...")
-            chunks = split_audio(audio_path)
+            chunks = split_audio(audio_path, output_dir=temp_dir / "chunks")
             print(f"   Split into {len(chunks)} chunks")
         else:
             print(f"\n📝 Audio under {CHUNK_THRESHOLD}s — single-chunk transcription")
@@ -738,12 +988,17 @@ def main():
                                  duration=info["duration_int"])]
 
         # ── Step 3-4: TRANSCRIBE with retry ──
+        from google import genai
+
         client = genai.Client(api_key=get_api_key())
-        segments = transcribe_with_retry(client, chunks, args.model, context)
+        segments = transcribe_with_retry(client, chunks, args.model, context, temp_dir=temp_dir)
+
+        if not any(segment.text.strip() for segment in segments):
+            raise RuntimeError("Gemini returned no transcript text; no output was written.")
 
         # ── Step 5: COMBINE ──
         print(f"\n📋 Combining {len(segments)} segments...")
-        transcript = combine_segments(segments, audio_path, args.model, args.description)
+        transcript = combine_segments(segments, original_audio_path, args.model, args.description)
 
         # ── Step 5b: MONOTONICITY CHECK ──
         transcript, ts_fixes = fix_timestamp_monotonicity(transcript)
@@ -751,15 +1006,14 @@ def main():
             print(f"\n🔧 Fixed {ts_fixes} timestamp regression(s) (Gemini artifact)")
 
         # Write output
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(transcript)
+        write_transcript(output_path, transcript)
         print(f"\n✅ Transcript saved: {output_path}")
 
         # ── Step 6: ARCHIVE (from original, not trimmed) ──
-        if not args.no_archive:
-            archive_to_ogg(original_audio_path)
+        if args.archive_dir is not None:
+            archive_to_ogg(original_audio_path, args.archive_dir)
         else:
-            print("\n📦 Archival skipped (--no-archive). Use SKILL.md Step 2b for named archive.")
+            print("\n📦 Archival skipped. Use --archive-dir or SKILL.md Step 2b for named archive.")
 
         # ── Step 7: REPORT ──
         total_duration = sum(s.duration for s in segments)
@@ -769,17 +1023,6 @@ def main():
         print(f"   Chunks: {len(segments)}")
         print(f"   Output: {output_path}")
         print(f"{'='*50}")
-    finally:
-        # ── Step 8: CLEANUP (runs on success and on exception) ──
-        if audio_path != original_audio_path and audio_path.exists():
-            try:
-                audio_path.unlink()
-                print(f"\n🧹 Cleaned up prepared temp file: {audio_path.name}")
-            except OSError as e:
-                print(f"\n⚠ Failed to remove prepared temp file {audio_path}: {e}")
-        if chunks_base_dir.exists():
-            shutil.rmtree(chunks_base_dir, ignore_errors=True)
-            print(f"🧹 Removed chunk dir: {chunks_base_dir}")
 
 
 if __name__ == "__main__":

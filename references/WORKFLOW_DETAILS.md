@@ -6,12 +6,17 @@ description: "Edge cases, conditional branches, and fast-paths for the meeting d
 
 ## Fast-Path: Existing Transcript
 
-When starting from an existing transcript (user says "create meeting summary from transcript at..."):
+When starting from an existing transcript, no transcription service or audio tools are needed.
 
-1. Skip Steps 0-2 entirely
-2. Read the transcript
-3. Continue from Step 3 (project detection)
-4. Filename for summary: derive from transcript filename (remove `-Transcript` suffix)
+**N/A:** Steps 1 (audio prep), 2 (transcription), 2.5 (cluster mapping from a new backend run), 2b (archive), and 8b (source backup). Mark their audio-only checklist items N/A.
+
+**Still required:**
+
+1. Gather meeting metadata in Step 0 from the transcript or user; do not confuse its export timestamp with the meeting time.
+2. Resolve names found in the transcript in Step 0b, using the private registry and user confirmation for ambiguity. No context/keyterms file is needed.
+3. Read the complete transcript, then perform Steps 3–8a. Preserve missing/uncertain timestamps and identities as uncertainty.
+4. Derive the summary filename from the transcript when appropriate (remove `-Transcript`). Preserve the supplied source and link its actual path.
+5. Omit the Recording footer link when no recording archive exists. Do not claim audio authenticity or backend provenance that was not verified.
 
 ## Step 0: Metadata Gathering Details
 
@@ -23,26 +28,26 @@ If the user's prompt includes title, project, and attendees, no questions needed
 
 Use AskUserQuestion to gather:
 - Meeting title (suggest based on audio filename)
-- Approximate start time (derive from file creation timestamp)
+- Meeting date/start time (establish whether a filename timestamp is start, stop, or export time before estimating; label uncertainty)
 - Attendees (if known — "Who was in this meeting?")
 
 ### Companion Files (Optional)
 
-If a sidecar file with title, timestamp, attendees, or an AI-generated pre-summary lives alongside the recording, read it first and pre-populate the metadata. Skip user prompts for fields the sidecar already provides; ask only for what's missing.
+If a sidecar file with title, timestamp, attendees, or an AI-generated pre-summary lives alongside the recording, read it first and pre-populate the metadata. Treat generated sidecars as hints; confirm material ambiguities and use the transcript/audio as evidence for decisions and tasks.
 
 ### Speaker Name Resolution (Step 0b — MANDATORY)
 
-**Why this exists:** AI-generated attendee lists and Gemini's diarization both guess at speaker names. These guesses are often close but wrong (misheard or transliterated variants of the same name). A single misspelled name propagates through context file → transcript → summary → daily note → project reference — 5 files with wrong names.
+**Why this exists:** Transcription engines and generated attendee lists can misidentify speaker names. These guesses are often close but wrong (misheard or transliterated variants of the same name). A single misspelled name propagates through context file → transcript → summary → daily note → project reference — 5 files with wrong names.
 
 **Procedure:**
 
 1. Read `references/KNOWN_SPEAKERS.yaml`
-2. For each raw name extracted from sidecar metadata or user input:
+2. For each raw name from the transcript, metadata, or user input:
    a. Check for case-insensitive exact match on `canonical_name`
    b. Check for case-insensitive match on any entry in `aliases`
    c. If matched → record the `canonical_name`, `role`, and `wikilink`
    d. If unmatched → mark as `[NEW SPEAKER]`
-3. Present the resolution table to the user via AskUserQuestion:
+3. Present unresolved or changed mappings via AskUserQuestion; reuse names already confirmed in the conversation:
 
 ```
 Speaker Name Resolution:
@@ -55,36 +60,30 @@ Speaker Name Resolution:
 
 4. For `[NEW]` speakers:
    - Ask user for the correct full name and role
-   - After meeting is processed, add the new speaker to `KNOWN_SPEAKERS.yaml` with any aliases discovered during the meeting
+   - Add only confirmed identity/aliases to the private registry when the user wants that registry updated; never populate it from an unsupported transcription guess
 
 **Edge cases:**
 - **Ambiguous match** (e.g., a first name matches two registry entries): Present both options and ask user to choose
 - **Team-based filtering**: If the detected project is known, prefer speakers whose `teams` field includes that project
 - **Name not in summary**: If a sidecar AI summary doesn't mention a known attendee but they spoke in the meeting, the user can add them during confirmation
 
-### Context File Generation
+### Context and Keyterms Files
 
-If attendees are confirmed (after Step 0b resolution):
-1. Read `references/CONTEXT_TEMPLATE.md` for the template format
-2. Use the **resolved canonical names** (NOT the raw extracted names) in the context file
-3. Read `references/PROJECT_KEYWORDS.yaml` for domain terms matching the project
-4. Write filled template to `/tmp/meeting_context.txt`
+Follow `references/CONTEXT_TEMPLATE.md`: use a unique private directory for each run, confirmed canonical names, and only the relevant domain terms. AssemblyAI uses newline-separated keyterms; Gemini can use a context prompt. Pass the exact file path and retain it for cleanup.
 
-If attendees are unknown, skip context file. Transcription will use generic speaker labels.
+If attendees are unknown, omit the roster and retain generic labels. Existing transcripts need neither file.
 
-## Step 1: Non-WAV Audio
+## Step 1: Audio Formats
 
-If source is already OGG, MP3, M4A, FLAC, or WebM:
-- Skip compression entirely
-- Proceed directly to Step 2 with the original file
+Pass the source audio to `scripts/transcribe.sh`. AssemblyAI inspects metadata and uploads the original. Gemini prepares working copies and repairs container/codec issues when needed. Neither path changes the original. Use the separate named archive step only after the title is confirmed.
 
 ## Step 2: Transcription
 
-Transcription environment is managed automatically by `scripts/transcribe.sh`. No manual setup needed.
+Transcription environment is managed by `scripts/transcribe.sh`: guarded configuration loads before bootstrap, and only the selected backend's missing dependency is installed. Choose a new transcript destination on reruns; the pipeline rejects existing outputs/input aliases and known archive collisions before provider work, then creates the transcript exclusively.
 
 ### Transcript Frontmatter Update
 
-`transcribe_pipeline.py` generates correct frontmatter automatically. However, the `title` field may still need updating to match the confirmed meeting title from Step 0.
+`transcribe_pipeline.py` emits transcript metadata and backend/model provenance. Review the title/date/source fields against the confirmed meeting; preserve requested versus returned model/language details, including separate AAI Requested Language and AAI Detected Language fields. After a named archive is verified, rewrite `source:` in the configured `LINK_STYLE`. See `BACKENDS.md` for cluster mapping and provenance.
 
 ## Step 3: No Project Detected
 
@@ -99,7 +98,7 @@ If no keywords match any project in PROJECT_KEYWORDS.yaml:
 
 ### Daily Note Does Not Exist
 
-Create it first (use a daily-note skill if your setup has one), then proceed with the meeting table update.
+Use the meeting date and configured `DAILY_NOTE_PATH_FORMAT`, not today's processing date. Create the note with an available daily-note skill, existing template, or the minimal skeleton in `SKILL.md`, then add the meeting row. Check for an existing row/reference before adding duplicates on reruns.
 
 ### Meetings Table Has Different Columns
 
@@ -120,7 +119,7 @@ If the daily note has no `## Meetings` section, add one after the Focus or Carry
 
 ### No Reference-Note Subdir
 
-Let `SUBDIR="${PROJECT_MEETING_SUBDIR-Meeting}"`. Create it:
+Let `SUBDIR="${PROJECT_MEETING_SUBDIR-Meeting}"`. Validate it as a single relative segment or empty before creating anything: reject absolute paths, slashes, and `..`, as in `SKILL.md` Step 6. Then create it:
 ```bash
 mkdir -p "${PROJECTS_DIR}/{ProjectName}/${SUBDIR}"
 ```
@@ -156,7 +155,7 @@ After updating the Meetings table in Step 5, scan the daily note's **Carryover**
 2. For each open carryover task, check if the meeting transcript/summary contains resolution:
    - Was a question answered? (e.g., "Ask PI about X" → answered in meeting)
    - Was a decision made that resolves the task?
-   - Was a deliverable discussed that completes the task?
+   - Was the deliverable explicitly completed or accepted? Discussion alone is not completion.
 3. If a carryover task was addressed, suggest marking it `[x]` with a note linking to the meeting summary
 4. Present any suggested completions to the user via AskUserQuestion before making changes
 
@@ -207,9 +206,6 @@ Update **both** project Dashboards:
 
 Some recording tools split long meetings into multiple files. If user provides multiple audio files:
 
-1. Concatenate with ffmpeg before processing:
-   ```bash
-   ffmpeg -i "concat:file1.ogg|file2.ogg" -c copy combined.ogg
-   ```
+1. Confirm segment order and inspect codec/sample-rate/channel compatibility. Use ffmpeg's concat demuxer for compatible inputs, or normalize separate working copies first; do not assume byte-concatenating compressed files produces a valid timeline. Preserve each original and validate combined duration/full decode before transcription.
 2. After concatenation, run the combined file through `scripts/transcribe.sh` — chunking, transcription, and combination are handled automatically.
 3. Note in the transcript: "Source: combined from N segments"
