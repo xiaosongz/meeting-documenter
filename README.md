@@ -16,11 +16,11 @@ An existing transcript skips transcription and audio handling while keeping meta
 ## Requirements
 
 - Claude Code and a filesystem-based Markdown notes directory, such as an Obsidian vault.
-- For audio: `ffmpeg`, `ffprobe`, and [`uv`](https://github.com/astral-sh/uv) on `$PATH`.
+- For audio: Python 3, `ffmpeg`, `ffprobe`, `bc`, and [`uv`](https://github.com/astral-sh/uv) on `$PATH`.
 - For the default backend: an `ASSEMBLYAI_API_KEY`.
 - For opt-in Gemini: `GOOGLE_API_KEY` or `GEMINI_API_KEY`.
 
-The wrapper creates a local Python environment and installs `requests` and `google-genai` when missing. Audio helper scripts may also require standard command-line tools such as `bc`.
+The wrapper validates and loads the selected trusted configuration before bootstrapping a local Python environment. It installs only the selected backend's missing dependency: `requests` for AssemblyAI or `google-genai` for Gemini. Gemini imports are lazy, so the default AssemblyAI path works without `google-genai`. The archive helper uses Python 3 for atomic publication without overwriting existing files.
 
 ## Install and setup
 
@@ -52,7 +52,7 @@ Replace fictional registry entries with your own confirmed data. Runtime registr
 
 **Configuration loading:** `scripts/transcribe.sh` loads this clone's `.env`, or a file selected by the shell export `MEETING_DOCUMENTER_ENV_FILE=/path/to/trusted.env`. Export that selector outside the file it selects. An empty value disables file loading and uses exported variables. The wrapper never implicitly loads `~/.env`; it rejects config files not owned by the current user or writable by group/others. A sourced config is executable shell code, so only use one you trust.
 
-**First-run side effect:** even `scripts/transcribe.sh --help` can create `.venv/` and install missing dependencies before reading configuration. It is not a read-only diagnostic or proof of a successful provider transcription. An external `.env` does not make a read-only clone writable; provision its environment before making an installation read-only.
+**First-run side effect:** after guarded configuration loading, even `scripts/transcribe.sh --help` can create `.venv/` and install the selected backend's missing dependency. It is not a read-only diagnostic or proof of a successful provider transcription. An external `.env` does not make a read-only clone writable; provision its environment before making an installation read-only.
 
 ## Use
 
@@ -87,9 +87,11 @@ For transcription only:
   --output /path/to/Team-Sync-Transcript.md
 ```
 
-These CLI commands produce a transcript; the agent follows [SKILL.md](SKILL.md) to create the linked notes. Built-in recording archival is disabled unless `--archive-dir <directory>` is supplied; `--no-archive` remains compatible. The full meeting workflow instead uses `compress-audio.sh --output <confirmed-title>.ogg` after title confirmation.
+Choose a new transcript output path for each run. Before provider work, the pipeline rejects existing transcript destinations, symlinks/hardlinks to the input, and known archive destination collisions. Transcript files are created exclusively and never replace prior transcripts. Empty or whitespace-only Gemini output fails without writing a transcript.
 
-See [backend guidance](references/BACKENDS.md) for keyterms/context, model/language options, provenance, polling limits, and speaker mapping. The pipeline distinguishes requested model lists from returned model information. Speaker clusters are not verified identities, and neither backend's output is automatically complete or accurate.
+These CLI commands produce a transcript; the agent follows [SKILL.md](SKILL.md) to create the linked notes. Built-in recording archival is disabled unless `--archive-dir <directory>` is supplied; `--no-archive` remains compatible. The full meeting workflow instead uses `compress-audio.sh --output <confirmed-title>.ogg` after title confirmation. The compressor stages and verifies output before publishing without overwrite; the exact same real OGG input/output path can be verified as a no-op, while other existing destinations, hardlinks, and symlinks are refused.
+
+See [backend guidance](references/BACKENDS.md) for keyterms/context, model/language options, provenance, polling limits, and speaker mapping. The pipeline distinguishes requested model lists and language hints from returned model information and detected language. Speaker clusters are not verified identities, and neither backend's output is automatically complete or accurate.
 
 ## Configuration
 

@@ -164,6 +164,21 @@ class EnvironmentLoaderTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PIPELINE_CALLED:loaded", result.stdout)
 
+    def test_wrapper_checks_only_selected_backend_dependency(self):
+        python = self.root / ".venv" / "bin" / "python3"
+        log = self.root / "imports.log"
+        python.write_text(
+            '#!/usr/bin/env bash\n'
+            'if [[ "$1" == "-c" ]]; then printf "%s\\n" "$2" >> "$MEETING_DOCUMENTER_IMPORT_LOG"; fi\n'
+        )
+        self.environment["MEETING_DOCUMENTER_IMPORT_LOG"] = str(log)
+        for flags, expected in [([], "import requests"), (["--backend", "gemini"], "import google.genai"), (["--backend=gemini"], "import google.genai")]:
+            with self.subTest(flags=flags):
+                log.unlink(missing_ok=True)
+                result = subprocess.run(["bash", str(self.wrapper), "--help", *flags], env=self.environment, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(log.read_text().strip(), expected)
+
     def test_explicit_empty_env_override_skips_default_file(self):
         self.environment["MEETING_DOCUMENTER_ENV_FILE"] = ""
         result = self.run_wrapper()

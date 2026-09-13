@@ -347,9 +347,9 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
    "${SKILL_DIR}/scripts/transcribe.sh" --help
    ```
 
-   **Caveat:** `transcribe.sh --help` creates `.venv/` and installs missing `requests`/`google-genai` dependencies before config loading. This is not a read-only or necessarily offline step. Skip bootstrap on a read-only mount unless its environment was already provisioned. Confirm the actual exit status; do not mask it with a successful output-truncating pipe.
+   **Caveat:** `transcribe.sh --help` validates and loads the selected trusted config before creating `.venv/` and installing the selected backend's missing dependency: `requests` for default AssemblyAI, or `google-genai` with `--backend gemini`. This is not a read-only or necessarily offline step. Skip bootstrap on a read-only mount unless its environment was already provisioned. Confirm the actual exit status; do not mask it with a successful output-truncating pipe.
 
-   If this fails (and the mount is writable), the venv didn't bootstrap; check `uv` installation.
+   If this fails, inspect the reported stage: configuration checks occur before bootstrap. For bootstrap errors on a writable mount, check `uv` and the selected backend's dependency.
 
 3. Verify the notes layout with a clearly fictional transcript and inspect saved links. For repository tests, use synthetic/public fixtures and mocked provider responses. A separate live transcription test requires authorized non-private test material and incurs provider charges; do not upload private recordings, registries, or notes as a smoke test. Report exactly which path was exercised.
 

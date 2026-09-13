@@ -13,6 +13,8 @@ description: "Backend selection, AssemblyAI request flags, transcription provena
 | Credential | `ASSEMBLYAI_API_KEY` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
 | Review required | Text accuracy, omissions, and cluster/name mapping | Text accuracy, omissions, generated names, repetition, and silence artifacts |
 
+The wrapper loads guarded configuration before bootstrap and installs only `requests` for AssemblyAI or `google-genai` for Gemini. Gemini imports are lazy; the default path does not require its SDK.
+
 AssemblyAI uploads the original audio after inspecting metadata. The Gemini path performs silence/container preparation and splitting on working copies.
 
 These defaults describe this repository's configuration. Availability, supported languages, request limits, and pricing can change; check the provider's current documentation when choosing a different model or language. No backend guarantees an accurate or complete transcript.
@@ -39,7 +41,9 @@ These defaults describe this repository's configuration. Availability, supported
   --output "${MEETING_RAW_DIR}/YYYY-MM-DD-HHMM Team-Sync-Transcript.md"
 ```
 
-The backend command does not archive by default. `--no-archive` is retained for compatibility; `--archive-dir <directory>` explicitly enables built-in archival. The meeting workflow prefers `compress-audio.sh --output <confirmed-title>.ogg` after title confirmation. Use one archival path. Built-in archival refuses a different existing destination or symlink and reports failure without discarding the transcript or source.
+Use a new transcript destination for each run. The pipeline rejects existing transcript destinations, symlinks/hardlinks to the input, and known archive destination collisions before provider work. Transcript writes use exclusive creation, so a prior transcript is never replaced.
+
+The backend command does not archive by default. `--no-archive` is retained for compatibility; `--archive-dir <directory>` explicitly enables built-in archival. The meeting workflow prefers `compress-audio.sh --output <confirmed-title>.ogg` after title confirmation. Use one archival path. The compressor stages and verifies output before publishing without overwrite. Only the exact same real OGG input/output path may be verified as a no-op; other existing destinations, hardlinks, and symlinks are refused. A later archive failure preserves any completed transcript and the source.
 
 ## AssemblyAI-only flags
 
@@ -72,9 +76,9 @@ Both files may contain private data. Create unique files per run, pass their exa
 
 ## Provenance
 
-Keep emitted backend/model metadata in the saved transcript. AssemblyAI output includes **Transcript ID**, **Submitted Models**, **Returned Models**, **Model Used**, **Detected Language**, and **Speakers Expected**. A missing returned model is recorded as unavailable rather than guessed. For AssemblyAI, distinguish the submitted model list and requested language from provider-returned model/language information and transcript identifier when available. A requested fallback is not evidence it was selected. For Gemini, preserve the requested model/backend metadata and any available response metadata. Do not invent response values when the provider omits them.
+Keep emitted backend/model metadata in the saved transcript. AssemblyAI output includes **Transcript ID**, **Submitted Models**, **Returned Models**, **Model Used**, **Requested Language**, **Detected Language**, and **Speakers Expected**. The **AAI Requested Language** field records the manual hint or `automatic detection`; **AAI Detected Language** separately records the provider response. A missing returned model is recorded as unavailable rather than guessed. For AssemblyAI, distinguish the submitted model list and requested language from provider-returned model/language information and transcript identifier when available. A requested fallback is not evidence it was selected. For Gemini, preserve the requested model/backend metadata and any available response metadata. Do not invent response values when the provider omits them.
 
-HTTP failures, failed jobs, unexpected states, polling timeout, or no speech stop the run rather than creating a successful empty transcript. Do not accept an older output at the same path as the failed run's result.
+HTTP failures, failed jobs, unexpected states, polling timeout, or no speech stop the run rather than creating a successful empty transcript. Empty or whitespace-only Gemini output also fails without writing a transcript. Do not accept an older output at the same path as the failed run's result.
 
 Record any later retranscription, excluded corrupt interval, or manual name mapping in the transcript's processing/diarization notes. Do not overwrite provenance to make a different run appear original. Transcript identifiers and local source paths are operational/private output, not public examples or test fixtures.
 
@@ -92,7 +96,7 @@ Gemini's generated names require the same evidence check even though a separate 
 
 Check for long repeated lines, stalled timestamps, implausible dialogue in quiet stretches, and missing speech. A late final timestamp or normal completion status proves neither accuracy nor completeness. See `QUALITY_CHECKLIST.md`.
 
-When output is corrupted, compare the affected window with audio and retry or choose a different supported backend within existing upload authorization. Preserve the source and note what changed. Recheck recovered text; neither a new backend nor a different cluster count resolves identity automatically.
+When output is corrupted, compare the affected window with audio and retry or choose a different supported backend within existing upload authorization. Preserve the source, choose a new transcript destination, and note what changed. Recheck recovered text; neither a new backend nor a different cluster count resolves identity automatically.
 
 ## Provider references
 

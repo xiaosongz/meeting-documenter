@@ -307,7 +307,7 @@ class GeminiTemporaryFileTests(unittest.TestCase):
                 stack.enter_context(patch.object(pipeline, "split_audio", side_effect=split))
                 stack.enter_context(patch.object(pipeline, "transcribe_with_retry", side_effect=transcribe))
                 stack.enter_context(patch.object(pipeline, "get_api_key", return_value="test-only-value"))
-                stack.enter_context(patch.object(pipeline.genai, "Client"))
+                stack.enter_context(patch("google.genai.Client"))
                 with self.assertRaisesRegex(RuntimeError, f"injected {stage} failure"):
                     pipeline.main()
                 self.assertEqual(reached[-1], stage)
@@ -333,7 +333,7 @@ class GeminiTemporaryFileTests(unittest.TestCase):
             client = Mock()
             client.models.generate_content.return_value = SimpleNamespace(
                 text="**[00:03] Speaker A:** Synthetic speech.",
-                candidates=[SimpleNamespace(finish_reason=pipeline.types.FinishReason.STOP)],
+                candidates=[SimpleNamespace(finish_reason="STOP")],
                 usage_metadata=None,
             )
             stack.enter_context(redirect_stdout(io.StringIO()))
@@ -341,7 +341,7 @@ class GeminiTemporaryFileTests(unittest.TestCase):
                 "transcribe_pipeline.py", str(source), "--backend", "gemini", "--output", str(output)
             ]))
             stack.enter_context(patch.object(pipeline, "get_api_key", return_value="test-only-value"))
-            stack.enter_context(patch.object(pipeline.genai, "Client", return_value=client))
+            stack.enter_context(patch("google.genai.Client", return_value=client))
             stack.enter_context(patch.object(pipeline, "prepare_audio", side_effect=prepare))
             archive = stack.enter_context(patch.object(pipeline, "archive_to_ogg"))
             pipeline.main()

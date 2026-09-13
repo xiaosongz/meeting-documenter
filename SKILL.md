@@ -31,7 +31,7 @@ export SKILL_DIR="<absolute path to the meeting-documenter clone>"
 
 If the notes layout or selected backend's credentials have not been configured, use `references/ONBOARDING_PROMPT.md`. Existing-transcript processing needs no transcription API key, audio dependencies, or upload. Missing speaker/project registries require direct name/project resolution with the user, not a guess.
 
-`scripts/transcribe.sh` loads `${SKILL_DIR}/.env` by default. Export `MEETING_DOCUMENTER_ENV_FILE` from the shell to select a different trusted file; an explicitly empty value disables file loading and uses exported variables. It does not implicitly load `~/.env`. The selected file is executable shell configuration: only source a trusted file owned by the current user and not group/world writable. `chmod 600` is recommended.
+`scripts/transcribe.sh` validates and loads `${SKILL_DIR}/.env` by default before environment bootstrap. It installs only the selected backend's missing dependency (`requests` for AssemblyAI, `google-genai` for Gemini); lazy Gemini imports keep the default path independent of `google-genai`. Export `MEETING_DOCUMENTER_ENV_FILE` from the shell to select a different trusted file; an explicitly empty value disables file loading and uses exported variables. It does not implicitly load `~/.env`. The selected file is executable shell configuration: only source a trusted file owned by the current user and not group/world writable. `chmod 600` is recommended.
 
 Agent shell calls may use fresh subshells. Read the resolved path/convention settings into working context, and load them in each shell call that needs them. Use the same safety checks as the wrapper before sourcing; never print credentials or the complete environment. This snippet uses Bash:
 
@@ -116,6 +116,8 @@ AssemblyAI inspects audio metadata and uploads the original recording; it does n
 
 ## Step 2: Transcribe
 
+Choose a new transcript destination for each run. Before provider work, the pipeline refuses existing transcript destinations, symlinks/hardlinks to the input, and known archive destination collisions. Transcript writes use exclusive creation and never replace a prior transcript.
+
 AssemblyAI is the default backend, with `universal-3-5-pro` as the default speech model:
 
 ```bash
@@ -137,11 +139,11 @@ Gemini is opt-in:
   --output "${MEETING_RAW_DIR}/YYYY-MM-DD-HHMM Title-Transcript.md"
 ```
 
-Omit `--context-file` when none was created. Gemini handles long audio using silence-aware chunks, truncation detection, and retries. Those checks do not prove content accuracy.
+Omit `--context-file` when none was created. Gemini handles long audio using silence-aware chunks, truncation detection, and retries. Empty or whitespace-only Gemini output fails without writing a transcript. Chunk/retry checks do not prove content accuracy.
 
-The pipeline emits backend/model provenance with the transcript. Preserve the distinction between requested models and provider-returned model/language metadata. Do not describe a requested fallback as the model that actually processed the recording unless the response establishes that. Full backend/flag guidance: `references/BACKENDS.md`.
+The pipeline emits backend/model provenance with the transcript. Preserve the distinction between requested models and provider-returned model/language metadata. Keep **AAI Requested Language** (`automatic detection` when no manual hint was supplied) separate from **AAI Detected Language**. Do not describe a requested fallback as the model that actually processed the recording unless the response establishes that. Full backend/flag guidance: `references/BACKENDS.md`.
 
-**Archival is off by default in this command.** `--no-archive` remains accepted for compatibility. `--archive-dir <directory>` explicitly opts into built-in archival; the documented meeting workflow instead uses Step 2b after the final title is confirmed. Do not run both archival paths for the same recording. Built-in archival refuses an existing different destination or a symlink; an archive failure stops the run while preserving the transcript and source.
+**Archival is off by default in this command.** `--no-archive` remains accepted for compatibility. `--archive-dir <directory>` explicitly opts into built-in archival; the documented meeting workflow instead uses Step 2b after the final title is confirmed. Do not run both archival paths for the same recording. Known archive destination collisions are rejected before provider work; a later archive failure stops the run while preserving any completed transcript and the source.
 
 ## Step 2.5: Map AssemblyAI clusters to names
 
@@ -161,7 +163,7 @@ Read the transcript and match project keywords from the private registry. Resolv
   --output "${MEETING_RECORDINGS_DIR}/YYYY-MM-DD-HHMM Title.ogg"
 ```
 
-`compress-audio.sh` handles encoder fallback and verification. If an archive needs trimming, first create a separate trimmed copy with `ffmpeg`, document the cutoff, and compress that copy. Check full decode, codec, and duration against the intended source interval before proceeding. Do not overwrite the original.
+`compress-audio.sh` handles encoder fallback and verification, staging output before publishing without overwrite. The exact same real OGG input/output path can be verified as a no-op; other existing destinations, hardlinks, and symlinks are refused. If an archive needs trimming, first create a separate trimmed copy with `ffmpeg`, document the cutoff, and compress that copy. Check full decode, codec, and duration against the intended source interval before proceeding. Do not overwrite the original.
 
 Set the transcript `source:` field to the archive using `LINK_STYLE`, preserving the pipeline's transcription provenance. The pipeline initially emits the source as a bare path; the agent performs this link rewrite. The summary includes a recording link only when its file exists.
 

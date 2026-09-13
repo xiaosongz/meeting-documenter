@@ -4,31 +4,14 @@
 #
 # Ensures:
 #   1. .venv exists (created with uv if missing)
-#   2. google-genai and requests are installed
-#   3. .env is loaded (GOOGLE_API_KEY)
+#   2. The trusted config is loaded before bootstrap
+#   3. Only the selected backend dependency is installed
 #   4. Delegates to transcribe_pipeline.py
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 export SKILL_DIR
 VENV_DIR="${SKILL_DIR}/.venv"
-
-# 1. Ensure .venv exists (idempotent, fast no-op if present)
-if [[ ! -f "${VENV_DIR}/bin/python3" ]]; then
-  echo "🔧 Creating persistent venv with uv..."
-  uv venv "${VENV_DIR}" --seed
-fi
-
-# 2. Install google-genai only if not already present (warm start = instant)
-if ! "${VENV_DIR}/bin/python3" -c "import google.genai" 2>/dev/null; then
-  echo "📦 Installing google-genai..."
-  VIRTUAL_ENV="${VENV_DIR}" uv pip install -q google-genai
-fi
-
-# Install the AssemblyAI HTTP client only when absent.
-if ! "${VENV_DIR}/bin/python3" -c "import requests" 2>/dev/null; then
-  VIRTUAL_ENV="${VENV_DIR}" uv pip install -q requests
-fi
 
 # 3. Load the configured API keys and paths.
 # Allow override: MEETING_DOCUMENTER_ENV_FILE=/path/to/.env supports shared installs,
@@ -54,6 +37,30 @@ if [[ -n "${ENV_FILE}" && -f "${ENV_FILE}" ]]; then
     exit 1
   fi
   set -a; source "${ENV_FILE}"; set +a
+fi
+
+# Bootstrap only after the configuration passed the safety checks.
+if [[ ! -f "${VENV_DIR}/bin/python3" ]]; then
+  echo "🔧 Creating persistent venv with uv..."
+  uv venv "${VENV_DIR}" --seed
+fi
+
+BACKEND=assemblyai
+ARGS=("$@")
+for ((i=0; i<${#ARGS[@]}; i++)); do
+  case "${ARGS[$i]}" in
+    --backend) BACKEND="${ARGS[$((i+1))]:-}" ;;
+    --backend=*) BACKEND="${ARGS[$i]#--backend=}" ;;
+    --) break ;;
+  esac
+done
+case "$BACKEND" in
+  assemblyai) MODULE=requests; PACKAGE=requests ;;
+  gemini) MODULE=google.genai; PACKAGE=google-genai ;;
+  *) echo "Invalid --backend: expected assemblyai or gemini" >&2; exit 2 ;;
+esac
+if ! "${VENV_DIR}/bin/python3" -c "import ${MODULE}" 2>/dev/null; then
+  VIRTUAL_ENV="${VENV_DIR}" uv pip install -q "$PACKAGE"
 fi
 
 # 4. Delegate to Python pipeline

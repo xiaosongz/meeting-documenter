@@ -24,10 +24,11 @@ Use configured paths, `DAILY_NOTE_PATH_FORMAT`, and `PROJECT_MEETING_SUBDIR` (em
 
 ## Transcript (Step 2)
 
+- [ ] New transcription uses an unused destination; preflight passed without existing transcript/input-alias or known archive collisions. A prior transcript was not replaced.
 - [ ] Transcript exists, is non-empty, and is readable; a new output uses `${MEETING_RAW_DIR}/YYYY-MM-DD-HHMM Title-Transcript.md`.
 - [ ] Timestamped content and speaker labels are present where the source provides them; missing timestamps in a supplied transcript were not invented.
-- [ ] Backend/model provenance is retained for new transcriptions; requested and returned values are not conflated.
-- [ ] Provider failures/retries completed successfully before the output was accepted (audio only).
+- [ ] Backend/model provenance is retained for new transcriptions; requested and returned values are not conflated. AAI Requested Language (manual hint or `automatic detection`) is distinct from AAI Detected Language.
+- [ ] Provider failures/retries completed successfully before the output was accepted (audio only); Gemini empty/whitespace-only output was not accepted as a transcript.
 - [ ] Beginning, middle, and end coverage were reviewed against audio when available; gaps are explained (audio only).
 - [ ] A span of at least 80% of audio duration is treated only as a coarse warning heuristic, never proof of completeness or accuracy.
 
@@ -53,7 +54,7 @@ Generative transcription can produce plausible speech in quiet stretches or repe
 
 - [ ] Only one archival path was used; built-in archival was not combined with a second redundant archive.
 - [ ] Named OGG exists at `${MEETING_RECORDINGS_DIR}/YYYY-MM-DD-HHMM Title.ogg` after title confirmation.
-- [ ] Full decode succeeds; codec is Vorbis or Opus; duration matches the intended source interval.
+- [ ] Full decode succeeds; codec is Vorbis or Opus; duration matches the intended source interval. Staged output was published without replacing an existing file, or the exact same real OGG path was verified as a no-op.
 - [ ] Transcript `source:` points to the archive in `LINK_STYLE` form without losing transcription provenance.
 - [ ] Recording links appear only when the linked recording exists.
 

@@ -27,14 +27,6 @@ from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
 
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    print("Error: google-genai package not installed. Run transcribe.sh to auto-install.")
-    sys.exit(1)
-
-
 # ─── Constants ──────────────────────────────────────────────────────────────
 
 SKILL_DIR = Path(__file__).parent.parent.resolve()
@@ -495,6 +487,8 @@ def is_transient_failure(response) -> bool:
 def transcribe_chunk(client, chunk: AudioChunk, model: str,
                      context: str | None) -> str:
     """Transcribe a single audio chunk via Gemini API."""
+    from google.genai import types
+
     audio_path = chunk.path
     file_size = audio_path.stat().st_size
     mime_type = SUPPORTED_FORMATS.get(audio_path.suffix.lower(), "audio/mp3")
@@ -646,17 +640,25 @@ tags:
 
 # ─── Archival ───────────────────────────────────────────────────────────────
 
-def archive_to_ogg(audio_path: Path, output_dir: Path) -> Path:
-    """Create OGG archive copy of audio_path inside output_dir.
-
-    output_dir must be provided explicitly — caller chooses where archives live;
-    no implicit default to avoid surprise writes into the source directory.
-    """
-    output_dir = output_dir.expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ogg_path = output_dir / (audio_path.stem + ".ogg")
-    if ogg_path.is_symlink() or (ogg_path.exists() and not ogg_path.samefile(audio_path)):
+def archive_destination(audio_path: Path, output_dir: Path) -> Path:
+    """Preflight without writes; only an exact source OGG path may be reused."""
+    ogg_path = output_dir.expanduser().resolve() / (audio_path.stem + ".ogg")
+    in_place = audio_path.suffix.lower() == ".ogg" and ogg_path == audio_path.resolve()
+    if ogg_path.is_symlink() or (ogg_path.exists() and not in_place):
         raise FileExistsError("Archive destination already exists; choose a different directory or named output.")
+    return ogg_path
+
+
+def write_transcript(output_path: Path, transcript: str) -> None:
+    """Exclusive creation also rejects a file or symlink created after preflight."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("x", encoding="utf-8") as output:
+        output.write(transcript)
+
+
+def archive_to_ogg(audio_path: Path, output_dir: Path) -> Path:
+    """Create a verified OGG archive without replacing existing files."""
+    ogg_path = archive_destination(audio_path, output_dir)
 
     print(f"\n📦 Archiving to OGG: {ogg_path}")
     result = subprocess.run(
@@ -709,6 +711,7 @@ def _aai_format_transcript(utterances: list, audio_path: Path,
     desc_line = "\ndescription: " + json.dumps(description, ensure_ascii=False)
     requested_models_text = ", ".join(metadata.get("requested_speech_models") or submitted_models) or "not recorded"
     model_used = metadata.get("speech_model_used") or "not returned"
+    requested_language = metadata.get("requested_language_code") or "not recorded"
 
     header = f"""---
 title: {json.dumps("Meeting Transcript - " + audio_path.stem, ensure_ascii=False)}
@@ -730,6 +733,7 @@ tags:
 **AAI Submitted Models:** `{requested_models_text}`
 **AAI Returned Models:** `{submitted_models_text}`
 **AAI Model Used:** `{model_used}`
+**AAI Requested Language:** `{requested_language}`
 **AAI Detected Language:** `{language_text}`
 **AAI Speakers Expected:** `{expected_text}`
 **Duration:** ~{format_duration(total_dur)} · {len(utterances)} utterances · {n_speakers} speaker clusters
@@ -858,11 +862,11 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
     print(f"   Detected language: {r.get('language_code')} ({r.get('language_confidence')})")
     print(f"   Submitted models returned by AAI: {r.get('speech_models')}")
     r["requested_speech_models"] = speech_models
+    r["requested_language_code"] = args.language_code or "automatic detection"
     r["speakers_expected"] = args.speakers_expected
 
     transcript = _aai_format_transcript(utterances, audio_path, args.description, r)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(transcript)
+    write_transcript(output_path, transcript)
     print(f"\n✅ Transcript saved: {output_path}")
 
     if args.archive_dir is not None:
@@ -881,7 +885,8 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Transcribe meeting audio with automatic chunking and truncation recovery"
+        description="Transcribe meeting audio with automatic chunking and truncation recovery",
+        allow_abbrev=False
     )
     parser.add_argument("audio_file", type=Path, help="Path to audio file")
     parser.add_argument("-o", "--output", type=Path, default=None,
@@ -925,9 +930,17 @@ def main():
 
     output_path = args.output
     if output_path:
-        output_path = output_path.expanduser().resolve()
+        output_path = output_path.expanduser().absolute()
     else:
         output_path = audio_path.with_name(audio_path.stem + "-Transcript.md")
+
+    # Preserve previous transcripts and source aliases; do this before provider work.
+    if output_path.exists() or output_path.is_symlink():
+        raise FileExistsError("Transcript destination already exists; choose a new output path.")
+    if args.archive_dir is not None:
+        archive_path = archive_destination(audio_path, args.archive_dir)
+        if archive_path == output_path.resolve():
+            raise ValueError("Transcript and archive destinations must be distinct.")
 
     # Load context
     context = None
@@ -975,8 +988,13 @@ def main():
                                  duration=info["duration_int"])]
 
         # ── Step 3-4: TRANSCRIBE with retry ──
+        from google import genai
+
         client = genai.Client(api_key=get_api_key())
         segments = transcribe_with_retry(client, chunks, args.model, context, temp_dir=temp_dir)
+
+        if not any(segment.text.strip() for segment in segments):
+            raise RuntimeError("Gemini returned no transcript text; no output was written.")
 
         # ── Step 5: COMBINE ──
         print(f"\n📋 Combining {len(segments)} segments...")
@@ -988,8 +1006,7 @@ def main():
             print(f"\n🔧 Fixed {ts_fixes} timestamp regression(s) (Gemini artifact)")
 
         # Write output
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(transcript)
+        write_transcript(output_path, transcript)
         print(f"\n✅ Transcript saved: {output_path}")
 
         # ── Step 6: ARCHIVE (from original, not trimmed) ──

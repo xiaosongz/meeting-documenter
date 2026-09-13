@@ -79,11 +79,11 @@ Pass the source audio to `scripts/transcribe.sh`. AssemblyAI inspects metadata a
 
 ## Step 2: Transcription
 
-Transcription environment is managed automatically by `scripts/transcribe.sh`. No manual setup needed.
+Transcription environment is managed by `scripts/transcribe.sh`: guarded configuration loads before bootstrap, and only the selected backend's missing dependency is installed. Choose a new transcript destination on reruns; the pipeline rejects existing outputs/input aliases and known archive collisions before provider work, then creates the transcript exclusively.
 
 ### Transcript Frontmatter Update
 
-`transcribe_pipeline.py` emits transcript metadata and backend/model provenance. Review the title/date/source fields against the confirmed meeting; preserve requested versus returned model/language details. After a named archive is verified, rewrite `source:` in the configured `LINK_STYLE`. See `BACKENDS.md` for cluster mapping and provenance.
+`transcribe_pipeline.py` emits transcript metadata and backend/model provenance. Review the title/date/source fields against the confirmed meeting; preserve requested versus returned model/language details, including separate AAI Requested Language and AAI Detected Language fields. After a named archive is verified, rewrite `source:` in the configured `LINK_STYLE`. See `BACKENDS.md` for cluster mapping and provenance.
 
 ## Step 3: No Project Detected
 
