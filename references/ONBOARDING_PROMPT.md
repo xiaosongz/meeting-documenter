@@ -12,21 +12,19 @@ Your job (as the agent) is to inspect the user's note-taking system, then either
 
 Probe these in order. Treat the first list as blockers; the second as adapters; the third as conventions you may need to negotiate.
 
-### Hard requirements (skill cannot transcribe without these)
+### Hard requirements (audio transcription only)
+
+For existing-transcript processing, skip API-key/audio-tool checks. Choose the transcription backend before checking credentials: AssemblyAI is the default; Gemini is opt-in.
 
 | Requirement | Check |
 |---|---|
-| `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) set in `.env` | see code block below (table cells can't carry `\|` safely) |
+| Selected backend credential: `ASSEMBLYAI_API_KEY`, or `GOOGLE_API_KEY`/`GEMINI_API_KEY` for Gemini | Check presence without printing its value; see below |
 | `ffmpeg` on `$PATH` | `command -v ffmpeg` |
 | `ffprobe` on `$PATH` | `command -v ffprobe` |
 | `uv` on `$PATH` | `command -v uv` |
 | Writable output directory | `test -w "$MEETING_RAW_DIR"` (or chosen path) |
 
-API-key check (the regex alternation can't live in a Markdown table cell, so run this directly):
-
-```bash
-grep -qE '^(GOOGLE|GEMINI)_API_KEY=' .env && echo "API key present" || echo "MISSING API key"
-```
+During diagnostic mode, check the selected config path and key-assignment presence without printing values or executing the file. Honor `MEETING_DOCUMENTER_ENV_FILE`; an explicitly empty value means exported shell variables only. An assignment with a placeholder is not a usable key. Ask the user to enter real keys in a local editor, never in chat. Verify actual credential presence after trusted configuration loading in the Verification section.
 
 ### Soft requirements (needed for full pipeline; can be disabled per-step)
 
@@ -42,7 +40,7 @@ grep -qE '^(GOOGLE|GEMINI)_API_KEY=' .env && echo "API key present" || echo "MIS
 | `DAILY_NOTE_PATH_FORMAT` | strftime template for daily-note path | Defaults `%Y/%m-%B/%Y-%m-%d.md` |
 | `PROJECT_MEETING_SUBDIR` | Per-project reference-note subdir | Defaults `Meeting`; empty = project root |
 | `LINK_STYLE` | Output link form (`wikilink`/`markdown`/`plain`) | Defaults `wikilink` |
-| `references/KNOWN_SPEAKERS.yaml` populated | Speaker resolution | Skip Step 0b if file absent or empty |
+| `references/KNOWN_SPEAKERS.yaml` populated | Speaker resolution | Resolve names with the user if absent/empty; do not skip identity review |
 | `references/PROJECT_KEYWORDS.yaml` populated | Project detection | Skip Step 3 keyword matching if absent |
 
 ### Conventions the skill currently assumes
@@ -89,14 +87,14 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 
 1. **Locate the skill repo.** Ask: "What is the path to your `meeting-documenter` clone?" Verify `SKILL.md` and `scripts/transcribe.sh` exist there. Resolve and export `SKILL_DIR=<absolute path to the cloned skill>` for use in later steps (every `${SKILL_DIR}` reference in this doc resolves against that export).
 
-   > **Shell persistence caveat:** Claude Code runs each Bash tool invocation in a fresh subshell — `export` does not carry across calls. Two options: (a) prefix every bash block in this doc with `export SKILL_DIR="<path>"` so it's set in that subshell, or (b) once adapt/bootstrap completes, add `SKILL_DIR="<path>"` to the generated `.env` and the verification snippet's `source .env` will populate it.
+   > **Shell persistence caveat:** Claude Code runs each Bash tool invocation in a fresh subshell — `export` does not carry across calls. Prefix each Bash block with the resolved `export SKILL_DIR="<path>"` so it is set in that subshell; load other settings only with the guarded configuration procedure in `SKILL.md`.
 
 2. **Locate the notes root.** Ask: "What is your notes / vault root directory (where you keep your Markdown files)? Or type 'none' if you don't have one yet." Verify the path exists.
 
 3. **Check hard requirements.** Run each shell check from the "Hard requirements" table. Capture results.
 
 4. **Check soft requirements.** For each env var in the "Soft requirements" table:
-   - Look in `${SKILL_DIR}/.env` if it exists
+   - Inspect the config selected by `${MEETING_DOCUMENTER_ENV_FILE-${SKILL_DIR}/.env}` if non-empty and present, without printing credentials
    - Otherwise check current shell env
    - Otherwise note as unset
    - For each *path* env var that resolves to something, verify the directory exists
@@ -122,7 +120,7 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 
    Hard requirements
    -----------------
-   [✅ / ❌]  GOOGLE_API_KEY              : <found in .env | NOT SET>
+   [✅ / ❌]  Selected backend credential : <assignment present | exported | NOT SET; value never shown>
    [✅ / ❌]  ffmpeg                      : <path | NOT FOUND>
    ...
 
@@ -188,20 +186,20 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
    - List subdirectories of `${PROJECTS_DIR}`. For each, ask the user: "Should this project be auto-detected from meeting transcripts? If yes, what 2–3 keywords or aliases should match it?"
    - Both registry files must stay gitignored. Confirm `.gitignore` covers them before writing.
 
-5. **Write `.env`.** Show the assembled `.env` to the user for review. Test whether `${SKILL_DIR}` is writable (`test -w "${SKILL_DIR}"`):
-   - **Writable:** write to `${SKILL_DIR}/.env` and verify the path is gitignored.
-   - **Not writable** (read-only mount, shared install, multi-user host): ask the user for an external path (e.g., `$HOME/.config/meeting-documenter/.env`). Write `.env` there, then emit a shell-export snippet for the user to add to their `~/.zshrc` or `~/.bashrc`:
+5. **Write `.env`.** Show the assembled path/convention settings with credential values redacted for review. Have the user enter the selected backend's key through a local editor; never ask them to paste it into chat. Since the file is sourced as shell code, only load trusted user-owned files and reject group/world-writable permissions; preserve the checks in `SKILL.md` and `scripts/transcribe.sh`. Test whether `${SKILL_DIR}` is writable (`test -w "${SKILL_DIR}"`):
+   - **Writable:** write to `${SKILL_DIR}/.env`, set mode `600`, and verify the path is gitignored.
+   - **Not writable** (read-only mount, shared install, multi-user host): ask the user for an external path (e.g., `$HOME/.config/meeting-documenter/.env`). Write `.env` there with mode `600`, then emit a shell-export snippet for the user to add to their `~/.zshrc` or `~/.bashrc`:
      ```bash
      export MEETING_DOCUMENTER_ENV_FILE="<chosen external path>"
      ```
-     Both `scripts/transcribe.sh` and the SKILL.md detection check honor this override.
+     Both `scripts/transcribe.sh` and the workflow honor this override; neither implicitly loads `~/.env`. An external config does not remove the wrapper's need for a provisioned Python environment in a read-only clone.
 
 6. **Final report.** List:
    - `.env` written: <path>
    - `KNOWN_SPEAKERS.yaml`: <N entries>
    - `PROJECT_KEYWORDS.yaml`: <N entries>
    - Convention env vars resolved (`DAILY_NOTE_PATH_FORMAT`, `PROJECT_MEETING_SUBDIR`, `LINK_STYLE`)
-   - Next step: "Try `scripts/transcribe.sh path/to/test.mp3` (from the meeting-documenter repo root) to confirm the pipeline runs end-to-end."
+   - Next step: complete the non-upload checks below. Use only synthetic/public or explicitly authorized test material for a separate live provider test; never select a private meeting recording as a smoke test.
 
 ---
 
@@ -237,7 +235,7 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 
    Use `mkdir -p` only; never `rm -rf`.
 
-   Also create the audio backup directory (referenced by `MEETING_AUDIO_BACKUP_DIR` in the `.env` below; Step 8b of the skill writes here and fails on first run if it doesn't exist):
+   If source-audio backup is part of the chosen workflow, create its configured directory:
 
    ```bash
    mkdir -p "${MEETING_AUDIO_BACKUP_DIR}"
@@ -304,7 +302,9 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
    DAILY_NOTES_DIR="${VAULT_PATH}/DailyNotes"
    PROJECTS_DIR="${VAULT_PATH}/Projects"
    MEETING_AUDIO_BACKUP_DIR="$HOME/audio-backups/meetings"
-   GOOGLE_API_KEY="<paste your key here>"
+   ASSEMBLYAI_API_KEY="<enter key locally>"
+   # Optional Gemini backend:
+   # GOOGLE_API_KEY="<enter key locally>"
 
    # Convention overrides — uncomment + edit if your setup differs from defaults
    # DAILY_NOTE_PATH_FORMAT="%Y/%m-%B/%Y-%m-%d.md"  # examples: "%Y-%m-%d.md" (flat), "Journal/%Y/%Y-%m-%d.md"
@@ -312,11 +312,11 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
    # LINK_STYLE="wikilink"                          # wikilink | markdown | plain
    ```
 
-   **Quote any value that could contain shell metachars.** If the value contains `<`, `>`, `*`, or any shell metachar, quote it: `GOOGLE_API_KEY="<paste your key here>"`. Placeholder tokens like `<chosen root>` and `<paste your key here>` MUST be inside double quotes in the written `.env`, otherwise the shell tries to redirect on `source`.
+   **Quote any value that could contain shell metachars.** If the value contains `<`, `>`, `*`, or any shell metachar, quote it: `ASSEMBLYAI_API_KEY="<enter key locally>"`. Placeholder tokens like `<chosen root>` and `<enter key locally>` MUST be inside double quotes in the written `.env`, otherwise the shell tries to redirect on `source`.
 
-   Ask the user for the Gemini API key. If they don't have one, point them to https://aistudio.google.com/apikey and stop here; resume after they paste the key.
+   Have the user enter the selected backend's API key locally in the config file and set mode `600`. AssemblyAI is the default; a Gemini key is needed only for `--backend gemini`. Do not ask them to paste secrets into chat. A transcript-only setup needs neither key.
 
-8. **Initialize registries.** Copy both `.template.yaml` files to their runtime `.yaml` counterparts. **Replace** the templated example entries with a single obviously-fake stub the user will edit. Do not leave templated names like `Alice Example` or `Bob Sample` in the populated `.yaml` — those will match real transcripts and corrupt speaker resolution on first run.
+8. **Initialize registries.** Copy both `.template.yaml` files to their runtime `.yaml` counterparts. **Replace** fictional template entries with confirmed user data, or leave valid empty lists using the template schema until real entries are provided. Do not leave templated names like `Alice Example` or `Bob Sample` in the populated `.yaml` — those will match real transcripts and corrupt speaker resolution on first run.
 
 9. **Final report.** Same format as adapt mode plus a `tree` of the scaffolded directory (depth 3) so user sees what was created.
 
@@ -324,39 +324,43 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 
 ## Verification (run after adapt or bootstrap)
 
-1. Source `.env` and confirm every required var is set. Honor `MEETING_DOCUMENTER_ENV_FILE` if the adapter wrote `.env` outside the skill repo (Mode 2 Step 5 read-only-mount branch). The `.env` must use quoted placeholder values (e.g. `GOOGLE_API_KEY="<paste your key here>"`) so `set -a; source` doesn't trip on shell metachars like `<`, `>`, or `*`:
+1. Load only the trusted selected configuration with the ownership/mode checks in `SKILL.md` (including malformed-mode rejection). Honor an external config or explicitly empty `MEETING_DOCUMENTER_ENV_FILE`. Never print key values or the full environment. After loading, this Bash check reports presence only:
 
    ```bash
-   ENV_FILE="${MEETING_DOCUMENTER_ENV_FILE-${SKILL_DIR}/.env}"
-   set -a; source "${ENV_FILE}"; set +a
-   echo "GOOGLE_API_KEY      = ${GOOGLE_API_KEY:-UNSET}"
-   echo "VAULT_PATH          = ${VAULT_PATH:-UNSET}"
-   echo "MEETING_NOTES_DIR   = ${MEETING_NOTES_DIR:-UNSET}"
-   echo "MEETING_RAW_DIR     = ${MEETING_RAW_DIR:-UNSET}"
+   if [[ -n "${ASSEMBLYAI_API_KEY:-}" ]]; then
+     echo "AssemblyAI credential: present (value hidden)"
+   else
+     echo "AssemblyAI credential: unset"
+   fi
+   if [[ -n "${GOOGLE_API_KEY:-${GEMINI_API_KEY:-}}" ]]; then
+     echo "Gemini credential: present (value hidden)"
+   else
+     echo "Gemini credential: unset"
+   fi
    ```
 
-   (Portable — each var expanded explicitly. Do NOT use bash indirect expansion of the form dollar-brace-bang-varname here; it fails in zsh and other POSIX-ish shells.)
+   Check resolved path/convention settings separately, and inspect placeholders locally. A present key is not proof of valid credentials; no provider call has occurred.
 
-2. Dry-run pipeline help:
+2. Check pipeline help (audio setups; this can install dependencies):
 
    ```bash
-   "${SKILL_DIR}/scripts/transcribe.sh" --help 2>&1 | head -20
+   "${SKILL_DIR}/scripts/transcribe.sh" --help
    ```
 
-   **Caveat:** Running `transcribe.sh --help` will create `.venv/` inside the skill repo if it doesn't exist. This is the skill's expected first-run side effect; it's gitignored. Skip this step if the skill repo is on a read-only mount.
+   **Caveat:** `transcribe.sh --help` creates `.venv/` and installs missing `requests`/`google-genai` dependencies before config loading. This is not a read-only or necessarily offline step. Skip bootstrap on a read-only mount unless its environment was already provisioned. Confirm the actual exit status; do not mask it with a successful output-truncating pipe.
 
    If this fails (and the mount is writable), the venv didn't bootstrap; check `uv` installation.
 
-3. Suggest the user run one short test audio (≤2 minutes) to confirm the full pipeline. Do not generate or fabricate audio for them.
+3. Verify the notes layout with a clearly fictional transcript and inspect saved links. For repository tests, use synthetic/public fixtures and mocked provider responses. A separate live transcription test requires authorized non-private test material and incurs provider charges; do not upload private recordings, registries, or notes as a smoke test. Report exactly which path was exercised.
 
 ---
 
 ## Guardrails
 
-- **Never write outside the user's chosen notes root or the skill repo.** No `$HOME/.zshrc` edits, no global config.
+- **Write only within the chosen notes root, skill repo, or explicitly chosen external config/backup path.** No `$HOME/.zshrc` edits or unrelated global config.
 - **Never overwrite an existing file without showing the diff and confirming.** Especially `.env`, registries, and daily-note templates.
 - **Never commit on the user's behalf.** Leave git decisions to them.
-- **Never paste the user's API key into chat output or logs.** Read it once, write to `.env`, do not echo back.
+- **Never paste the user's API key into chat output or logs.** Have the user enter it locally. Redact it in reviews; status checks report presence only. Never source an untrusted or unsafe config file.
 - **Stop and ask if any probe step returns ambiguous results.** Better to ask than guess wrong about the user's layout.
 - **Surface "known limitations" honestly.** The `meeting_outcome` taxonomy (`decision | update | planning | blocked | cancelled`) is hardcoded in `references/SUMMARY_FORMAT.md`. If the user prefers a different taxonomy, document the mismatch in the final report. Daily-note path, link form, and project subdir are now parameterized via `DAILY_NOTE_PATH_FORMAT`, `LINK_STYLE`, and `PROJECT_MEETING_SUBDIR` — set them in `.env` rather than calling out as limitations.
 
@@ -366,9 +370,9 @@ Use `AskUserQuestion` with these three options. Do not proceed past diagnostic w
 
 After adapt or bootstrap mode completes successfully, the user should have:
 
-- `${SKILL_DIR}/.env` with all required + chosen-soft env vars
-- `${SKILL_DIR}/references/KNOWN_SPEAKERS.yaml` (populated or with at least one example entry)
-- `${SKILL_DIR}/references/PROJECT_KEYWORDS.yaml` (populated or with at least one example entry)
+- Trusted `.env` at the selected path (or explicitly exported environment) with required/chosen settings; credentials only when audio transcription is configured
+- `${SKILL_DIR}/references/KNOWN_SPEAKERS.yaml` (confirmed entries or a valid empty registry)
+- `${SKILL_DIR}/references/PROJECT_KEYWORDS.yaml` (confirmed entries or a valid empty registry)
 - Notes root containing the structure their `.env` points at
 - A clear written list of any conventions that don't match and require manual `SKILL.md` edits (until those become env-configurable)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cleanup-source-audio.sh — Verify archive, backup original with meeting name, remove vault root copies
+# cleanup-source-audio.sh — Verify archive and preserve the original in a named backup
 #
 # Usage:
 #   cleanup-source-audio.sh <original_audio> <archive_ogg> --meeting-name "Title" --meeting-time "HHMM"
@@ -12,8 +12,7 @@
 # Steps:
 #   1. Verify archive OGG is valid (exists, decodable, vorbis/opus, duration > 0)
 #   2. Rename + move original to ${MEETING_AUDIO_BACKUP_DIR}/YYYY-MM/
-#   3. Remove any pipeline-created duplicate OGG from vault root
-#   4. Report results
+#   3. Report results; leave adjacent files untouched
 #
 # Configuration:
 #   MEETING_AUDIO_BACKUP_DIR  Base directory for archived originals
@@ -57,6 +56,12 @@ done
 
 if [ -z "$MEETING_NAME" ] || [ -z "$MEETING_TIME" ]; then
     echo "Both --meeting-name and --meeting-time are required"
+    exit 1
+fi
+
+# A distinct archive must survive moving the source into backup storage.
+if [[ ! -f "$ORIGINAL" || "$ORIGINAL" -ef "$ARCHIVE" ]]; then
+    echo "Refusing backup: source must exist and be distinct from the archive" >&2
     exit 1
 fi
 
@@ -131,29 +136,18 @@ if [ -f "$ORIGINAL" ]; then
     mkdir -p "$BACKUP_DIR"
     BACKUP_PATH="${BACKUP_DIR}/${BACKUP_NAME}"
 
-    if [ -f "$BACKUP_PATH" ]; then
-        echo "Backup already exists: ${BACKUP_NAME}"
-    else
-        mv "$ORIGINAL" "$BACKUP_PATH"
-        echo "Backed up: ${ORIG_BASENAME} -> ${YEAR_MONTH}/${BACKUP_NAME}"
+    if [[ -e "$BACKUP_PATH" || -L "$BACKUP_PATH" ]]; then
+        echo "Refusing backup: destination already exists; source preserved" >&2
+        exit 1
     fi
+    mv "$ORIGINAL" "$BACKUP_PATH"
+    echo "Backed up: ${ORIG_BASENAME} -> ${YEAR_MONTH}/${BACKUP_NAME}"
 
     ORIGINAL_SIZE=$(stat -f%z "$BACKUP_PATH" 2>/dev/null || stat --format=%s "$BACKUP_PATH" 2>/dev/null)
     ORIGINAL_MB=$(echo "scale=1; $ORIGINAL_SIZE/1048576" | bc)
 else
     echo "Original not found (already removed?): $ORIGINAL"
     ORIGINAL_MB=0
-fi
-
-# ─── Remove pipeline duplicate OGG from vault root ──────────────────────────
-
-ORIGINAL_DIR=$(dirname "$ORIGINAL")
-ORIGINAL_STEM=$(basename "$ORIGINAL" | sed 's/\.[^.]*$//')
-DUPLICATE_OGG="${ORIGINAL_DIR}/${ORIGINAL_STEM}.ogg"
-
-if [ -f "$DUPLICATE_OGG" ]; then
-    rm "$DUPLICATE_OGG"
-    echo "Removed pipeline duplicate: $(basename "$DUPLICATE_OGG")"
 fi
 
 # ─── Report ──────────────────────────────────────────────────────────────────

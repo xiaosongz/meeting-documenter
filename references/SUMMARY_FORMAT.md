@@ -46,7 +46,7 @@ All `[[Name]]` examples in this document are written in the default Obsidian wik
 [[raw/2026-05-27-1030 Sync-Transcript|Full Transcript]]
 ```
 
-For `markdown` style, the agent must know the path to each linked note. For attendees, default to `People/<Name>.md` if no other layout is configured. For `plain` style, no clickable navigation is produced — pick this only if the user's note system doesn't support either link form.
+For `markdown` style, the agent must know the path to each linked note and make it relative to the containing note. For attendees, default to `People/<Name>.md` if no other layout is configured. For `plain` style, no clickable navigation is produced — pick this only if the user's note system doesn't support either link form.
 
 `LINK_STYLE` also affects `references/QUALITY_CHECKLIST.md` link-form verification rules.
 
@@ -57,6 +57,7 @@ For `markdown` style, the agent must know the path to each linked note. For atte
 ```yaml
 ---
 title: "Meeting Title"
+description: "Key outcome in about 150 characters"
 date: 2026-01-19
 type: meeting
 tags:
@@ -146,11 +147,14 @@ Grouped by person with checkbox format.
 
 **Guidelines**:
 - Use checkbox format `- [ ]` for Obsidian task tracking
-- Add `[due:: YYYY-MM-DD]` inline field when a deadline is mentioned or can be inferred
+- Include only explicit assignments or commitments that remain unresolved at the end of the meeting; reconcile later completions, cancellations, and reassignments.
+- Preserve the original deadline wording in the task text (for example, "by next Friday"). Add `[due:: YYYY-MM-DD]` only if the stated deadline resolves unambiguously from the meeting date. Omit the field for absent or ambiguous dates; never invent a deadline.
 - Add `[project:: [[ProjectName]]]` inline field to link tasks to their project
 - Add `[assignee:: Person Name]` on every action item — enables per-person task queries: `TASK WHERE assignee = "Name"`
 - Make tasks specific and verifiable
-- Assign to "Team" or "TBD" if owner unclear
+- Use only a supported explicit owner. If the owner is unclear, record the request under Follow-Up Items or Topics with its uncertainty; do not fabricate a `Team` or `TBD` assignment.
+- Do not turn discussion, a suggestion, or a completed in-meeting request into a new open task.
+- If no explicit outstanding assignments remain, write "No outstanding action items were explicitly assigned."
 
 ### Parking Lot
 
@@ -164,7 +168,7 @@ Items explicitly tabled during the meeting — no owner assigned yet.
 
 **Guidelines:**
 - Only include items explicitly tabled ("let's park that", "come back to", "table for now", "discuss next time")
-- These items have NO owner — if an owner is identifiable, it's an Action Item instead
+- A deferred topic is not automatically a task. Include an action item only when a participant explicitly commits to a follow-up that remains open; otherwise keep the topic here.
 - Distinguish from Follow-Up Items: parking lot = explicitly deferred during meeting; follow-up = general future agenda
 - Include "No items tabled." if nothing was explicitly deferred
 
@@ -190,7 +194,7 @@ Summary paragraphs with timestamps (if available from transcript).
 
 ### Follow-Up Items
 
-Items requiring future attention but not immediate action.
+Unresolved questions, unassigned requests, and future topics actually raised in the meeting. State uncertainty and avoid turning them into new assignments or invented deadlines.
 
 ```markdown
 ## Follow-Up Items
@@ -201,6 +205,8 @@ Items requiring future attention but not immediate action.
 ```
 
 ### Footer
+
+Include the Recording link only when its archive exists. The transcript-only path links the actual supplied transcript and omits the recording link.
 
 Render the `Source` line and `See Also` links per `LINK_STYLE` — substitute every `[[...]]` example below according to the Link Styles table at the top of this file.
 
@@ -224,6 +230,7 @@ The template below is shown in `wikilink` form. For `markdown` or `plain` styles
 ```markdown
 ---
 title: "Meeting Title"
+description: "Key outcome in about 150 characters"
 date: YYYY-MM-DD
 type: meeting
 tags:
@@ -288,13 +295,16 @@ project: ProjectFolderName
 ### Content Quality
 - [ ] Executive summary is concise (2-3 sentences max)
 - [ ] All decisions are actual decisions, not discussions
-- [ ] Action items have owners assigned
+- [ ] Every action item has an explicit supported owner and remains unresolved at meeting end
+- [ ] Original deadline wording is preserved; normalized due dates appear only when unambiguous
+- [ ] No task, owner, or deadline was invented from discussion
 - [ ] Action items are specific and verifiable
 - [ ] Topics are summarized, not transcribed verbatim
 - [ ] Parking Lot section present (use "No items tabled." if nothing deferred)
 
 ### Format Quality
 - [ ] YAML frontmatter is valid
+- [ ] `description` is present and captures the key outcome
 - [ ] `meeting_outcome` field present and set to one of: `decision`, `update`, `planning`, `blocked`, `cancelled`
 - [ ] Attendees use the link form set by `LINK_STYLE` (see Link Styles section above)
 - [ ] All action items include `[assignee:: Person Name]`

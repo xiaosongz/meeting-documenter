@@ -1,0 +1,28 @@
+name: Tests
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg bc
+          python -m pip install google-genai requests
+      - name: Check shell syntax
+        run: |
+          for script in scripts/*.sh; do bash -n "$script"; done
+      - name: Run offline regression tests
+        run: python -B -m unittest discover -s tests -v

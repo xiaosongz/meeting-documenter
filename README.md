@@ -1,152 +1,150 @@
 # meeting-documenter
 
-A [Claude Code](https://claude.com/claude-code) skill that turns a meeting recording into structured, linked notes in an Obsidian vault — transcript, summary, action items, daily-note row, and per-project reference note — in one pipeline.
+A [Claude Code](https://claude.com/claude-code) skill that turns a meeting recording or existing transcript into structured, linked notes: a summary, supported action items, a daily-note row, and project references. Release **0.7.0** adds AssemblyAI transcription, explicit model/language controls, provenance, and stronger source-fidelity checks while preserving configurable note layouts.
 
 ## What it does
 
-Given an audio file (MP3 / WAV / OGG / M4A / FLAC / WebM / AAC), the skill:
+1. Resolves metadata and speaker names using confirmed context and your private registries.
+2. Transcribes audio with **AssemblyAI by default** (`universal-3-5-pro`), or **Gemini on request** (`gemini-2.5-flash`). Gemini includes audio preparation, silence-aware chunking, and truncation retries.
+3. Reviews anonymous speaker clusters or generated names, preserving unresolved identities.
+4. Creates a source-linked summary with actual decisions and explicit assignments still open at meeting end; preserves stated deadline wording.
+5. Updates the meeting date's daily note and confirmed project references using your link style and folder conventions.
+6. Creates a named OGG archive after title confirmation, and can preserve the original in your configured backup directory.
 
-1. **Prepares audio** — trims trailing silence, fixes codec/container mismatches automatically
-2. **Transcribes** with [Gemini](https://ai.google.dev/) (speaker diarization, silence-aware chunking for long meetings, auto-retry on truncation)
-3. **Resolves speaker names** against a canonical registry to stop misheard variants from propagating
-4. **Detects the project** by keyword matching, then asks the user to confirm
-5. **Generates a structured summary** — frontmatter, executive summary, decisions, action items (with assignees), parking lot, topics, follow-ups
-6. **Updates the daily note** — adds a row to the `## Meetings` table, cross-references carryover tasks
-7. **Links to the project** — creates a per-project reference note + bumps the project Dashboard
-8. **Archives** the OGG-compressed recording in the vault + backs up the original lossless source
+An existing transcript skips transcription and audio handling while keeping metadata, name resolution, summary, and integration checks. No transcription API key is needed for that path.
 
 ## Requirements
 
-- [Claude Code](https://claude.com/claude-code) CLI
-- An Obsidian vault (default paths use neutral folder names — override via env vars to match any layout)
-- `ffmpeg` and `ffprobe` on `$PATH`
-- [`uv`](https://github.com/astral-sh/uv) (Python package manager — bootstraps the venv automatically)
-- A [Google AI Studio](https://aistudio.google.com/apikey) API key for Gemini
+- Claude Code and a filesystem-based Markdown notes directory, such as an Obsidian vault.
+- For audio: `ffmpeg`, `ffprobe`, and [`uv`](https://github.com/astral-sh/uv) on `$PATH`.
+- For the default backend: an `ASSEMBLYAI_API_KEY`.
+- For opt-in Gemini: `GOOGLE_API_KEY` or `GEMINI_API_KEY`.
 
-## Install
+The wrapper creates a local Python environment and installs `requests` and `google-genai` when missing. Audio helper scripts may also require standard command-line tools such as `bc`.
+
+## Install and setup
 
 ```bash
-# 1. Clone the repo somewhere accessible to Claude Code
 git clone https://github.com/xiaosongz/meeting-documenter
 cd meeting-documenter
 ```
 
-### Guided setup (recommended)
-
-The skill ships with an **onboarding prompt** designed to be read by your own Claude Code agent. It inspects your note-taking system, then either adapts the skill to your existing layout or scaffolds a minimum structure if you don't have one yet.
-
-Open Claude Code in this repo (or wherever your notes live) and run:
+For guided setup, ask your agent:
 
 > Read `references/ONBOARDING_PROMPT.md` in the meeting-documenter repo and follow it to set this skill up for my system. Start in diagnostic mode.
 
-The agent will walk through three modes:
+Onboarding inspects your existing layout before adapting configuration/registries or creating a minimal notes structure. Diagnostic mode is read-only.
 
-- **Diagnostic** — read-only inspection; reports what's ready, what's missing, what doesn't match
-- **Adapt** — fits the skill to your existing notes layout by generating `.env` + populating registries
-- **Bootstrap** — scaffolds a minimum folder + template structure if you're starting from scratch
-
-### Manual setup (alternative)
+For manual setup:
 
 ```bash
-# 1. Configure the API key + vault path
 cp .env.example .env
-$EDITOR .env   # set GOOGLE_API_KEY and VAULT_PATH
+chmod 600 .env
+$EDITOR .env  # set VAULT_PATH and the selected backend's API key locally
 
-# 2. Copy the registry templates and fill in your team's data.
-#    The .yaml versions are gitignored — only the .template.yaml versions ship publicly.
 cp references/KNOWN_SPEAKERS.template.yaml references/KNOWN_SPEAKERS.yaml
 cp references/PROJECT_KEYWORDS.template.yaml references/PROJECT_KEYWORDS.yaml
 $EDITOR references/KNOWN_SPEAKERS.yaml
 $EDITOR references/PROJECT_KEYWORDS.yaml
 ```
 
-> **First-run side effect:** the first invocation of `scripts/transcribe.sh` (including `--help`) creates a `.venv/` inside this repo via `uv` and installs `google-genai`. The directory is gitignored. Skip the first run if the repo is on a read-only mount.
->
-> **External `.env`:** set `MEETING_DOCUMENTER_ENV_FILE=/path/to/your.env` to keep `.env` outside the skill repo (useful for read-only mounts, shared installs, multi-user hosts). Both `transcribe.sh` and the SKILL.md detection check honor this override.
+Replace fictional registry entries with your own confirmed data. Runtime registries and `.env` are gitignored; the templates remain public.
+
+**Configuration loading:** `scripts/transcribe.sh` loads this clone's `.env`, or a file selected by the shell export `MEETING_DOCUMENTER_ENV_FILE=/path/to/trusted.env`. Export that selector outside the file it selects. An empty value disables file loading and uses exported variables. The wrapper never implicitly loads `~/.env`; it rejects config files not owned by the current user or writable by group/others. A sourced config is executable shell code, so only use one you trust.
+
+**First-run side effect:** even `scripts/transcribe.sh --help` can create `.venv/` and install missing dependencies before reading configuration. It is not a read-only diagnostic or proof of a successful provider transcription. An external `.env` does not make a read-only clone writable; provision its environment before making an installation read-only.
 
 ## Use
 
-In Claude Code, just describe what you want:
+Ask Claude Code:
 
-```
-process this recording: /path/to/Recording 20260119143000.m4a
-```
-
-```
-document this meeting: /path/to/team-sync.mp3
+```text
+process this recording: /path/to/team-sync.m4a
 ```
 
-The skill walks through the pipeline and asks for confirmation at decision points (title, speakers, project).
+```text
+create meeting notes from the existing transcript at /path/to/team-sync-transcript.md
+```
+
+For transcription only:
+
+```bash
+# AssemblyAI, default backend; optional speaker-count hint
+./scripts/transcribe.sh /path/to/audio.m4a \
+  --speakers-expected 2 \
+  --output /path/to/Team-Sync-Transcript.md
+
+# Explicit model/language and optional one-term-per-line hints
+./scripts/transcribe.sh /path/to/audio.m4a \
+  --aai-speech-models universal-3-5-pro \
+  --language-code en \
+  --keyterms-file /path/to/private-keyterms.txt \
+  --output /path/to/Team-Sync-Transcript.md
+
+# Gemini is opt-in
+./scripts/transcribe.sh /path/to/audio.m4a \
+  --backend gemini --model gemini-2.5-flash \
+  --output /path/to/Team-Sync-Transcript.md
+```
+
+These CLI commands produce a transcript; the agent follows [SKILL.md](SKILL.md) to create the linked notes. Built-in recording archival is disabled unless `--archive-dir <directory>` is supplied; `--no-archive` remains compatible. The full meeting workflow instead uses `compress-audio.sh --output <confirmed-title>.ogg` after title confirmation.
+
+See [backend guidance](references/BACKENDS.md) for keyterms/context, model/language options, provenance, polling limits, and speaker mapping. The pipeline distinguishes requested model lists from returned model information. Speaker clusters are not verified identities, and neither backend's output is automatically complete or accurate.
 
 ## Configuration
 
-Override defaults via environment variables (e.g., in your shell config or a project-level `.env`):
+Set these in the selected trusted config or shell environment:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `VAULT_PATH` | (required) | Vault root |
+| `VAULT_PATH` | required for default paths | Notes root |
 | `MEETING_NOTES_DIR` | `${VAULT_PATH}/MeetingNotes` | Summaries |
 | `MEETING_RAW_DIR` | `${MEETING_NOTES_DIR}/raw` | Transcripts |
-| `MEETING_RECORDINGS_DIR` | `${MEETING_NOTES_DIR}/recordings` | OGG archives |
-| `DAILY_NOTES_DIR` | `${VAULT_PATH}/DailyNotes` | Daily notes (year/month subdirs) |
-| `PROJECTS_DIR` | `${VAULT_PATH}/Projects` | Active projects with `Dashboard.md` |
-| `MEETING_AUDIO_BACKUP_DIR` | `$HOME/audio-backups/meetings` | Original recordings (post-archive) |
-| `DAILY_NOTE_PATH_FORMAT` | `%Y/%m-%B/%Y-%m-%d.md` | strftime template for daily-note path (relative to `DAILY_NOTES_DIR`). e.g., `%Y-%m-%d.md` for flat. |
-| `PROJECT_MEETING_SUBDIR` | `Meeting` | Subdir under each project for per-project reference notes. Empty = project root. |
-| `LINK_STYLE` | `wikilink` | `wikilink` (Obsidian) / `markdown` / `plain`. Drives attendee + source link form in Claude-authored outputs (summary, daily-note rows, project reference notes). **Note:** the Python pipeline emits the transcript's `source:` frontmatter as a bare path regardless of `LINK_STYLE`; the agent rewrites it per `LINK_STYLE` in Step 2b (recording archive). |
-| `MEETING_DOCUMENTER_ENV_FILE` | `${SKILL_DIR}/.env` | Absolute path to the `.env` file that `scripts/transcribe.sh` and the SKILL.md first-run detection check should source. **Export from your shell config (e.g., `~/.zshrc`), not from inside the `.env` itself** — that would be circular. Useful for read-only repo mounts, shared installs, multi-user hosts. |
-| `GOOGLE_API_KEY` | (required) | Gemini API key. `GEMINI_API_KEY` also accepted. |
+| `MEETING_RECORDINGS_DIR` | `${MEETING_NOTES_DIR}/recordings` | Named OGG archives |
+| `DAILY_NOTES_DIR` | `${VAULT_PATH}/DailyNotes` | Daily notes |
+| `PROJECTS_DIR` | `${VAULT_PATH}/Projects` | Project folders |
+| `MEETING_AUDIO_BACKUP_DIR` | `$HOME/audio-backups/meetings` | Original recordings |
+| `DAILY_NOTE_PATH_FORMAT` | `%Y/%m-%B/%Y-%m-%d.md` | Relative daily-note path; `%Y-%m-%d.md` for flat notes |
+| `PROJECT_MEETING_SUBDIR` | `Meeting` | Single relative subdirectory; empty means project root |
+| `LINK_STYLE` | `wikilink` | `wikilink`, `markdown`, or `plain` |
+| `MEETING_DOCUMENTER_ENV_FILE` | this clone's `.env` | Exported selector for trusted configuration; empty disables loading |
+| `ASSEMBLYAI_API_KEY` | required for AssemblyAI | Default backend credential |
+| `GOOGLE_API_KEY` | required for Gemini | Opt-in credential; `GEMINI_API_KEY` also accepted |
 
-Defaults use neutral folder names. If your vault uses PARA, Johnny.Decimal, or any other layout, point each path env var at the matching directory.
+The agent resolves directory defaults and conventions during the workflow. `LINK_STYLE` controls agent-authored summary, daily-note, project-reference, and recording links. The Python pipeline initially writes the transcript's `source:` as a bare path; the agent rewrites it after verifying the named archive.
 
 ## Repository layout
 
-```
-.
-├── SKILL.md                          # Skill entry point (Claude reads this)
-├── scripts/
-│   ├── transcribe.sh                 # Bootstrap venv + load .env + run pipeline
-│   ├── transcribe_pipeline.py        # Full transcription pipeline
-│   ├── compress-audio.sh             # Any-format → OGG with 3-point verify
-│   ├── split-audio.sh                # Silence-aware splitter for long audio
-│   └── cleanup-source-audio.sh       # Verify archive, backup original, clean vault root
-├── references/
-│   ├── ONBOARDING_PROMPT.md               # Prompt your Claude Code agent reads to adapt the skill to your system
-│   ├── SUMMARY_FORMAT.md                  # Output spec for summaries
-│   ├── QUALITY_CHECKLIST.md               # Verification checklist (Step 7)
-│   ├── WORKFLOW_DETAILS.md                # Edge cases + fast-paths
-│   ├── CONTEXT_TEMPLATE.md                # Speaker diarization context template
-│   ├── KNOWN_SPEAKERS.template.yaml       # Template — copy to KNOWN_SPEAKERS.yaml (gitignored) and edit
-│   └── PROJECT_KEYWORDS.template.yaml     # Template — copy to PROJECT_KEYWORDS.yaml (gitignored) and edit
-├── .env.example
-├── .gitignore
-└── LICENSE
+```text
+SKILL.md                         Skill entry point
+scripts/transcribe.sh            Environment bootstrap and guarded config loading
+scripts/transcribe_pipeline.py   Transcription backends and provenance
+scripts/compress-audio.sh        Named OGG archive and verification
+scripts/split-audio.sh           Silence-aware splitting
+scripts/cleanup-source-audio.sh  Original recording backup
+references/ONBOARDING_PROMPT.md  Guided setup
+references/BACKENDS.md           Backend flags and speaker mapping
+references/SUMMARY_FORMAT.md     Summary/task fidelity and link styles
+references/QUALITY_CHECKLIST.md  Source, output, and cleanup verification
+references/WORKFLOW_DETAILS.md   Existing transcripts and integration edge cases
+references/CONTEXT_TEMPLATE.md   Private per-run keyterms/context
+references/*.template.yaml      Fictional registry templates
+.env.example                    Configuration template
 ```
 
-## Cost
+## Privacy and verification
 
-Roughly Gemini's published rate for `gemini-3-flash-preview`. Empirically:
+Audio and supplied hints are sent to the selected transcription provider. Generated notes can contain private meeting content, speaker names, source paths, and provider identifiers. Keep them outside public repositories. Removing identifiers from a summary does not make an original recording public.
 
-| Audio length | Approx. cost |
-|-------------:|-------------:|
-| 60 min, 1 chunk | ~$0.08 |
-| 120 min, 3 chunks w/ retry | ~$0.25 |
+`.gitignore` reduces accidental staging; it cannot prevent force-added files or remove sensitive data already committed. Before publishing a fork or PR, inspect the actual tracked files and staged diff for credentials, private registries, recordings, transcripts, local paths, and identifiers. Rotate any exposed credential.
 
-Claude summarization runs inside your existing Claude Code subscription.
+Tests should use generated/public audio and fictional metadata with mocked provider responses. Do not upload private meeting recordings as a smoke test. A live API test needs authorized test material and incurs provider charges; report it separately from offline test results. With the local environment provisioned, run offline regression checks with `.venv/bin/python3 -B -m unittest discover -s tests -v`. Follow the [quality checklist](references/QUALITY_CHECKLIST.md) before accepting actual meeting notes.
 
-## Security
+## Customization and cost
 
-- **`.env`** — already in `.gitignore`. If you accidentally commit it, rotate the key.
-- **`references/KNOWN_SPEAKERS.yaml` and `references/PROJECT_KEYWORDS.yaml`** contain real names, emails, and project codenames once you fill them in. Both are already in this repo's `.gitignore` so they cannot be pushed to a fork. Only the `.template.yaml` versions are tracked. If you migrate to a different setup, audit any backup of these files before sharing.
+Use environment variables for note layout and link form, CLI flags for supported backend/model choices, and [SUMMARY_FORMAT.md](references/SUMMARY_FORMAT.md) for output structure. The agent can omit steps the user explicitly excludes.
 
-## Customization
-
-The skill is designed to be edited:
-
-- **Different vault layout**: override the path env vars (see Configuration)
-- **Different transcription model**: edit `scripts/transcribe_pipeline.py` (look for `gemini-3-flash-preview`)
-- **Different summary format**: edit `references/SUMMARY_FORMAT.md` — the skill reads this at Step 4
-- **Skip steps**: the pipeline is documented in `SKILL.md` step-by-step; you can ask Claude to skip any step (e.g., "process this recording but skip Step 6")
+Transcription and agent usage are billed under your provider/account terms. This repository does not promise a per-meeting price or processing time; check current provider pricing for your chosen model.
 
 ## License
 

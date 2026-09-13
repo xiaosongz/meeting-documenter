@@ -4,7 +4,7 @@
 #
 # Ensures:
 #   1. .venv exists (created with uv if missing)
-#   2. google-genai is installed
+#   2. google-genai and requests are installed
 #   3. .env is loaded (GOOGLE_API_KEY)
 #   4. Delegates to transcribe_pipeline.py
 set -euo pipefail
@@ -25,7 +25,12 @@ if ! "${VENV_DIR}/bin/python3" -c "import google.genai" 2>/dev/null; then
   VIRTUAL_ENV="${VENV_DIR}" uv pip install -q google-genai
 fi
 
-# 3. Load API key (.env must set GOOGLE_API_KEY=...)
+# Install the AssemblyAI HTTP client only when absent.
+if ! "${VENV_DIR}/bin/python3" -c "import requests" 2>/dev/null; then
+  VIRTUAL_ENV="${VENV_DIR}" uv pip install -q requests
+fi
+
+# 3. Load the configured API keys and paths.
 # Allow override: MEETING_DOCUMENTER_ENV_FILE=/path/to/.env supports shared installs,
 # read-only mounts, multi-user hosts. Default is ${SKILL_DIR}/.env.
 # Note: bare `-` (not `:-`) so an explicit empty value opts out of file loading.
@@ -37,8 +42,14 @@ if [[ -n "${ENV_FILE}" && -f "${ENV_FILE}" ]]; then
     echo "Refusing to source ${ENV_FILE}: not owned by current user (UID=${UID})." >&2
     exit 1
   fi
-  perm=$(stat -f '%Lp' "${ENV_FILE}" 2>/dev/null || stat -c '%a' "${ENV_FILE}" 2>/dev/null)
-  if (( 8#${perm:-0} & 022 )); then
+  perm=$(stat -c '%a' "${ENV_FILE}" 2>/dev/null || stat -f '%Lp' "${ENV_FILE}" 2>/dev/null || true)
+  # Fail closed: if neither stat dialect could read the mode, we can't verify
+  # the file isn't world-writable, so refuse rather than source blind.
+  if [[ ! "${perm}" =~ ^[0-7]{3,4}$ ]]; then
+    echo "Refusing to source ${ENV_FILE}: could not read file permissions to verify it is not writable by others." >&2
+    exit 1
+  fi
+  if (( 8#${perm} & 022 )); then
     echo "Refusing to source ${ENV_FILE}: group or world writable (mode=${perm}). chmod 600 ${ENV_FILE} to fix." >&2
     exit 1
   fi
