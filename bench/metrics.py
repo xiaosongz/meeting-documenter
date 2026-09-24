@@ -263,6 +263,22 @@ def summarize(bd: Breakdown, top_pairs: int = 10) -> dict:
     }
 
 
+def frame_ier(ref: list[Seg], hyp: list[Seg], uem: list[tuple[float, float]] | None,
+              roster: set[str] | None, collar: float = 0.0) -> tuple[float, float]:
+    """Fast frame-level IER with the same open-set mapping as `headline` (for parameter
+    sweeps). Returns (errors_s, total_s); IER = errors / total. Per frame with r reference
+    and h hypothesis labels and c shared: error = r − c + max(0, h − r)."""
+    r_os, h_os = open_set_map(ref, hyp, roster)
+    end = max([s.end for s in ref + hyp] + [b for _, b in (uem or [])] + [0.0])
+    n = _frames(end) + 1
+    scored = scored_mask(n, ref, uem, collar)
+    labels = sorted({s.speaker for s in r_os + h_os})
+    R = _activity(r_os, labels, n) & scored[:, None]
+    H = _activity(h_os, labels, n) & scored[:, None]
+    r, h, c = R.sum(1), H.sum(1), (R & H).sum(1)
+    return float((r - c + np.maximum(0, h - r)).sum() * FRAME), float(r.sum() * FRAME)
+
+
 def wder(pairs: list[tuple[str, str]]) -> float | None:
     """Word diarization error rate over (reference speaker, hypothesis speaker) per word,
     labels already in one namespace (no permutation). Abstentions count as errors."""

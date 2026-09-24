@@ -40,6 +40,15 @@ def test_frame_breakdown_matches_pyannote_ier_components():
     assert sum(bd.enrolled.values()) == pytest.approx(h["total"], abs=0.02)
 
 
+@pytest.mark.parametrize("roster", [ROSTER, {"A", "C"}])
+@pytest.mark.parametrize("collar", [0.0, 0.25])
+def test_frame_ier_matches_pyannote(roster, collar):
+    hyp = [Seg(0.0, 3.0, "A"), Seg(3.0, 4.6, "B"), Seg(4.8, 8.0, "A"), Seg(7.0, 8.5, "GUEST_1"),
+           Seg(9.0, 15.0, "C"), Seg(15.0, 20.0, "UNCERTAIN(A|C)"), Seg(21.0, 21.9, "B")]
+    err, tot = M.frame_ier(REF, hyp, UEM, roster, collar)
+    assert err / tot == pytest.approx(M.headline(REF, hyp, UEM, roster, collar)["ier"], abs=0.005)
+
+
 def test_wrong_name_vs_abstain_vs_missed():
     ref = [Seg(0, 10, "A")]
     hyp = [Seg(0, 2, "A"), Seg(2, 4, "B"), Seg(4, 6, "UNCERTAIN(A|B)"), Seg(6, 8, "UNKNOWN")]
