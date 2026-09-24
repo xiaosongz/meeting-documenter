@@ -36,6 +36,7 @@ def voice_like(sec=4.0, f0=140.0, seed=0):
 def test_embedder_contract(name):
     emb = em.get_embedder(name, device="cpu")
     assert emb.model_id and emb.dim > 0 and emb.sample_rate == SR
+    assert emb.model_id == em.model_id_for(name)                          # readiness checks rely on it
     w = voice_like()
     a, b = emb.embed(w), emb.embed(w)
     assert a.shape == (emb.dim,) and a.dtype == np.float32

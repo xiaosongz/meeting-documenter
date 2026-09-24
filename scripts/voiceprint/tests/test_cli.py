@@ -229,3 +229,117 @@ def test_track_end_to_end_with_oracle_boundaries(env, monkeypatch):
     assert any(t.speaker.startswith("GUEST_") for t in tl.turns)                  # 400 Hz is unenrolled
     c_turns = [(21.0, 31.0), (52.5, 62.5)]                                         # voice C (k = 2, 5)
     assert not any(t.kind == "name" and a < (t.start + t.end) / 2 < b for t in tl.turns for a, b in c_turns)
+
+
+def _ready_env(monkeypatch):
+    """track-check sees the fake embedder's model id and an installed boundary model."""
+    from voiceprint import embedders, segment as sg
+    monkeypatch.setattr(embedders, "available_embedders", lambda: ["redimnet2"])
+    monkeypatch.setattr(embedders, "model_id_for", lambda name: SpectralEmbedder.model_id)
+    monkeypatch.setattr(sg, "available", lambda backend="seg3": True)
+
+
+def check(store, capsys, *argv) -> dict:
+    capsys.readouterr()
+    assert cli.main(["--store", str(store), "track-check", *argv]) == 0
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def test_track_check_reports_each_missing_piece(env, monkeypatch, capsys):
+    from voiceprint import segment as sg
+    tmp, store = env
+    monkeypatch.setattr("voiceprint.embedders.available_embedders", lambda: [])
+    assert check(store, capsys)["status"] == "no_embedder"
+    _ready_env(monkeypatch)
+    assert check(store, capsys)["status"] == "no_voiceprints"
+    assert not store.exists()                                             # a probe never creates the store
+    for key, seed in (("2026-01-01-1000", 1), ("2026-01-03-1000", 3)):
+        wav, side = make_meeting(tmp, key, [150, 260], seed=seed)
+        for c, name in (("A", "Alice"), ("B", "Bob")):
+            assert run(store, "enroll", "--name", name, "--audio", str(wav), "--utterances", str(side),
+                       "--cluster", c) == 0
+    r = check(store, capsys)
+    assert r["status"] == "no_calibration" and "track-calibrate" in r["reason"]
+    assert run(store, "track-calibrate") == 0
+    r = check(store, capsys, "--roster", "alicia,Carol")                  # aliases resolve
+    assert r["ready"] and r["roster_enrolled"] == ["Alice Example"] and r["roster_missing"] == ["Carol Example"]
+    assert r["backend"] == "nemotron3" and r["calibration"].startswith("store-lomo")
+    assert check(store, capsys, "--roster", "Carol,Dave")["status"] == "roster_not_enrolled"
+    monkeypatch.setattr(sg, "available", lambda backend="seg3": backend == "seg3")
+    assert check(store, capsys)["status"] == "no_boundary"
+    assert check(store, capsys, "--backend", "seg3")["ready"]
+
+
+def test_track_check_without_dependencies_is_json(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(cli, "DEPS_ERROR", "ImportError: no numpy")
+    assert cli.main(["--store", str(tmp_path / "s"), "track-check"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "no_deps"
+
+
+def meeting_timeline(tmp, key, side, labels, title="Test"):
+    """Timeline JSON named like the pipeline's (<transcript stem>.timeline.json) from a sidecar."""
+    from voiceprint import timeline as tlm
+    turns = [tlm.Turn.from_label(u["start"] / 1000, u["end"] / 1000, labels[u["speaker"]], 0.9)
+             for u in json.loads(side.read_text())["utterances"]]
+    path = tmp / f"{key} {title}-Transcript.timeline.json"
+    path.write_text(tlm.to_json(tlm.Timeline.from_turns(turns, {"backend": "oracle"})))
+    return path
+
+
+def test_enroll_from_timeline_turns(env, capsys):
+    tmp, store = env
+    A, B, C = 150, 260, 400
+    for key, seed in (("2026-01-01-1000", 1), ("2026-01-03-1000", 3)):
+        wav, side = make_meeting(tmp, key, [A, B], seed=seed)
+        for c, name in (("A", "Alice"), ("B", "Bob")):
+            assert run(store, "enroll", "--name", name, "--audio", str(wav), "--utterances", str(side),
+                       "--cluster", c) == 0
+    wav, side = make_meeting(tmp, "2026-01-05-1000", [A, B, C], turns=6, seed=5)
+    tl = meeting_timeline(tmp, "2026-01-05-1000", side,
+                          {"A": "Alice Example", "B": "Bob Example", "C": "GUEST_1"})
+
+    def enroll(*argv):
+        return run(store, "enroll", "--audio", str(wav), "--timeline", str(tl), *argv)
+
+    # a confirmed guest becomes a newly enrolled person (from the timeline's GUEST_1 turns)
+    assert enroll("--name", "Carol", "--speaker", "GUEST_1", "--source", "user_ear") == 0
+    assert "2 GUEST_1 turn(s) ≥ 3 s" in capsys.readouterr().err
+    assert run(store, "list", "--json", str(tmp / "l.json")) == 0
+    people = {p["person"]: p for p in json.loads((tmp / "l.json").read_text())["people"]}
+    assert people["Carol Example"]["meetings"] == 1 and people["Carol Example"]["sources"] == ["user_ear"]
+    # a named speaker's own turns (Step 8c), restricted to user-confirmed spans
+    assert enroll("--name", "Alice", "--spans", "0:00-0:10") == 0
+    # refusals: a label that names someone else, a wrong voice under a new name, weak or unconfirmed turns
+    assert enroll("--name", "Bob", "--speaker", "Alice Example") == 2
+    tl2 = meeting_timeline(tmp, "2026-01-05-1000", side,                   # A mislabelled as a guest
+                           {"A": "GUEST_2", "B": "Bob Example", "C": "GUEST_1"}, title="Other")
+    assert run(store, "enroll", "--audio", str(wav), "--timeline", str(tl2), "--name", "Dave",
+               "--speaker", "GUEST_2") == 3                              # self-check: Alice's voice
+    assert "not enrolled yet" in capsys.readouterr().err
+    assert enroll("--name", "Dave") == 2                                   # no Dave turns in the timeline
+    assert enroll("--name", "Alice", "--min-turn-s", "20") == 2           # turns are 10 s
+    assert enroll("--name", "Alice", "--speaker", "UNKNOWN", "--spans", "0-5") == 2
+    assert enroll("--name", "Alice", "--spans", "5-2") == 2
+    assert run(store, "enroll", "--name", "Alice", "--audio", str(wav), "--utterances", str(side),
+               "--timeline", str(tl), "--cluster", "A") == 2           # one source only
+    assert run(store, "enroll", "--name", "Alice", "--audio", str(wav), "--utterances", str(side)) == 2
+
+
+def test_enroll_uncertain_turns_need_confirmed_spans(env):
+    from voiceprint import timeline as tlm
+    tmp, store = env
+    wav, side = make_meeting(tmp, "2026-01-07-1000", [150, 260], turns=2, seed=7)
+    tl = meeting_timeline(tmp, "2026-01-07-1000", side,
+                          {"A": tlm.uncertain_label(["Alice Example", "Bob Example"]), "B": "Bob Example"})
+    args = ["enroll", "--name", "Alice", "--audio", str(wav), "--timeline", str(tl),
+            "--speaker", "UNCERTAIN(Alice Example|Bob Example)"]
+    assert run(store, *args) == 2
+    assert run(store, *args, "--spans", "0-10") == 0     # (the span keeps a silent edge for the energy VAD)
+
+
+def test_parse_spans():
+    assert cli.parse_spans("12.5-20, 01:05-01:30,1:00:00-1:00:04") == [(12.5, 20.0), (65.0, 90.0),
+                                                                       (3600.0, 3604.0)]
+    assert cli.parse_spans(None) == []
+    with pytest.raises(ValueError):
+        cli.parse_spans("20-10")

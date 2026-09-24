@@ -200,3 +200,12 @@ def test_attribution_scales_to_long_meetings():
     wm.rebuild_turns(out)
     assert time.perf_counter() - t0 < 2.0
     assert len(out) == len(ws)
+
+
+def test_display_label_is_readable():
+    assert wm.display_label("Alice Example") == "Alice Example"
+    assert wm.display_label("GUEST_2") == "Guest 2"
+    assert wm.display_label("UNKNOWN") == "Unknown speaker"
+    assert wm.display_label("UNCERTAIN(Alice Example|Bob Example)") == "Alice Example or Bob Example (uncertain)"
+    assert wm.display_label("UNCERTAIN(A|B|GUEST_1)") == "A, B or Guest 1 (uncertain)"
+    assert wm.display_label("OVERLAP(A|UNKNOWN)") == "A + Unknown speaker (overlap)"
