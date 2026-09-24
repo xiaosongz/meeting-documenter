@@ -61,3 +61,17 @@ def test_embed_batches_bounded_and_order_preserved():
     waves = [np.zeros(n, np.float32) for n in lengths]
     assert list(B._embed(Fake(), waves, batch=2)[:, 0]) == lengths
     assert B._embed(Fake(), [], batch=2).shape == (0, 1)
+
+
+def test_cohort_drops_speakers_matching_an_enrolled_model(tmp_path):
+    from bench.protocol import Meeting
+
+    rng = np.random.default_rng(1)
+    a, b, other = B._l2(rng.standard_normal((3, 32)))
+    mk = lambda mid, series, spk: Meeting(mid, "x", "test", series, spk, 1.0, tmp_path, {})
+    pool = [mk("S1a", "S1", ("A",)), mk("S2a", "S2", ("B", "C"))]
+    np.savez(tmp_path / "S2a.enroll.npz", speaker=np.array(["B", "B", "C", "C"]),
+             emb=np.stack([a, a, other, other]).astype(np.float32))   # B is A under another label
+    assert len(B.cohort_vectors(pool[0], pool, tmp_path)) == 4
+    kept = B.cohort_vectors(pool[0], pool, tmp_path, {"A": a})
+    assert len(kept) == 2 and np.allclose(kept, other)

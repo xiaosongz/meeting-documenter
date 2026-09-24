@@ -242,13 +242,25 @@ def enrollment_models(meeting: Meeting, pool: list[Meeting], cdir: Path) -> dict
     return out
 
 
-def cohort_vectors(meeting: Meeting, pool: list[Meeting], cdir: Path) -> np.ndarray:
+COHORT_MAX_COS = 0.8  # cohort speakers this close to an enrolled model are presumed the same person
+
+
+def cohort_vectors(meeting: Meeting, pool: list[Meeting], cdir: Path,
+                   models: dict[str, np.ndarray] | None = None) -> np.ndarray:
+    """Enrollment clips of the other series' speakers. With `models`, a cohort speaker whose
+    centroid has cosine ≥ COHORT_MAX_COS to any enrolled model is dropped: AISHELL-4 labels
+    are group-local, and a few people recur across groups under other labels (acoustic
+    check: cross-group pairs at 0.86-0.91 vs same-label p05 0.85, different-label p95 0.56)."""
+    C = np.stack(list(models.values())) if models else None
     vecs = []
     for key, ms in cohort_speakers(meeting, pool).items():
         spk = key.split("/", 1)[1]
-        for m in ms:
-            z = _load(cdir, m.id, "enroll")
-            vecs.append(z["emb"][z["speaker"] == spk])
+        E = np.concatenate([(z := _load(cdir, m.id, "enroll"))["emb"][z["speaker"] == spk] for m in ms])
+        if not len(E):
+            continue
+        if C is not None and float((C @ _l2(_l2(E).mean(0))).max()) >= COHORT_MAX_COS:
+            continue
+        vecs.append(E)
     return _l2(np.concatenate(vecs)) if vecs else np.zeros((0, 1), np.float32)
 
 
@@ -335,7 +347,7 @@ def prepare_scores(meetings: list[Meeting], pool: list[Meeting], cdir: Path, top
     out = []
     for m in meetings:
         models = enrollment_models(m, pool, cdir)
-        names, S = score_windows(_load(cdir, m.id, "test")["emb"], models, cohort_vectors(m, pool, cdir), top_n)
+        names, S = score_windows(_load(cdir, m.id, "test")["emb"], models, cohort_vectors(m, pool, cdir, models), top_n)
         out.append(Prepared(m, _load(cdir, m.id, "test"), names, S, rosters(m, names)))
     return out
 
