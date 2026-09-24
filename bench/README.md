@@ -42,19 +42,25 @@ enrollment stream. *M* itself is never used for enrollment.
   series (ES2004, IS1009, TS3003, EN2002; 16 meetings), each with the same four
   participants in all its meetings. One participant is absent from EN2002c and stays on
   that meeting's roster, which tests false names for absent people. Enrollment uses the
-  headset mix and testing uses the far-field SDM, so the channel is mismatched.
+  headset mix and testing uses the far-field SDM, so the channel is mismatched. The dev
+  split's unlettered meetings (IB40xx) form a series with the other unlettered meetings
+  that have the same participants (IB4001+IB4002, IB4003+IB4004, IB4010+IB4011).
 - **AISHELL-4.** Speaker labels (`001-M` … `007-M`) are **local to a session group**, not
   global. Sessions are `<room>_R<group>S<session>C<n>`. The four sessions of a group
   (e.g. `L_R003S01…S04`) share one label set, and a label in another group is a different
   person (the gender suffix of `002` differs between groups). The protocol therefore
   treats a group as a series and enrolls from the group's other three sessions (same
   array channel). `python -m bench.datasets.verify_ids` checks acoustically that each
-  label is one voice across its group.
+  label is one voice across its group: 342/342 session-pair matches on the eval set
+  (same-label cosine p05 0.85, different-label p95 0.56). A few people do recur across
+  groups under different labels (cross-group centroid cosine 0.86–0.91), which matters
+  for the cohort below.
 - **Rosters.** `closed` holds every series participant with enrollment material.
   `loo:<spk>` is the closed roster minus one present speaker; that speaker's speech is
   unenrolled and measures the open-set false-name rate.
 - **Cohort** (AS-norm): speakers of the other series in the same split, never anyone
-  from *S*.
+  from *S*. B0 also drops any cohort speaker whose centroid has cosine ≥ 0.8 to an
+  enrolled model, because group-local labels cannot exclude a recurring person by ID.
 
 ## Metrics (`bench/metrics.py`)
 
@@ -81,7 +87,33 @@ cross-session enrollment centroids → AS-norm (top-100 cohort) → Viterbi over
 plus an `UNKNOWN` state with constant score θ (the absolute threshold) and switch penalty
 λ. λ = 0 is plain per-window argmax, reported as `b0-argmax`. θ and λ are tuned on AMI dev
 to minimise the mean of closed and leave-one-out IER, then frozen for the test sets.
-
-Results: see the table below (filled from `report.md` of each run).
+On MPS, clips are embedded in length-sorted batches of at most 48 s of audio, and the MPS
+cache is released after each batch. Without this, the caching allocator reached an 83 GB
+footprint while RSS showed 3–8 GB.
 
 <!-- RESULTS -->
+### Results (2026-09-24; ReDimNet2, θ = 0.5, λ = 1 tuned on AMI dev)
+
+Closed roster, collar 0 (collar 0.25 in brackets). False-name rate is over
+leave-one-out rosters.
+
+| Set | IER % | DER % | abstain % | false-name % | IER % `b0-argmax` |
+|---|---|---|---|---|---|
+| AMI test (16, SDM; headset enrollment) | 37.26 (30.50) | 37.26 | 0.96 | 22.61 | 37.44 |
+| AISHELL-4 eval (20, ch 0) | 25.33 (18.58) | 24.77 | 1.03 | 34.89 | 25.67 |
+
+Enrolled speech by reference-turn duration, collar 0 (correct / wrong name / missed, %):
+
+| Bucket | AMI test | AISHELL-4 eval |
+|---|---|---|
+| < 1 s | 8.0 / 5.8 / 83.7 | 7.6 / 13.0 / 77.3 |
+| 1–3 s | 38.9 / 3.6 / 55.4 | 47.2 / 7.7 / 43.2 |
+| 3–10 s | 60.9 / 2.1 / 35.6 | 70.7 / 2.8 / 25.1 |
+| ≥ 10 s | 74.7 / 0.8 / 24.1 | 80.4 / 0.7 / 18.2 |
+| overlap | 37.1 / 2.7 / 57.9 | 41.7 / 4.4 / 51.8 |
+
+Missed speech dominates B0's errors. On AMI SDM, Silero VAD recalls only 77.5 % of the
+reference speech time (at 98 % precision), and a single label per frame cannot cover
+overlap. Once speech is labelled, 96 % of enrolled speech gets the right name. The
+open-set false-name rate (22–35 %) is the other weakness: θ is not calibrated per
+dataset.
