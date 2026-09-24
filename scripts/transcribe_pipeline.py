@@ -753,6 +753,48 @@ tags:
     return header + body + "\n"
 
 
+def utterances_sidecar_path(transcript_path: Path) -> Path:
+    """`<transcript stem>.utterances.json` next to the transcript (voiceprint Step 2.5a input)."""
+    return transcript_path.with_name(transcript_path.stem + ".utterances.json")
+
+
+def _aai_utterances_sidecar(utterances: list, metadata: dict | None = None) -> dict:
+    """Utterances sidecar (schema 1): exact AssemblyAI millisecond timestamps per cluster.
+
+    `speaker_map` stays null; confirmed names are added after Step 2.5. It holds meeting
+    text but no biometrics, so it lives next to the transcript with the same privacy.
+    """
+    metadata = metadata or {}
+    duration_s = metadata.get("audio_duration")
+    return {
+        "schema": 1,
+        "source": "assemblyai",
+        "transcript_id": metadata.get("id"),
+        "audio_duration_ms": (int(duration_s * 1000) if duration_s is not None
+                              else (int(utterances[-1]["end"]) if utterances else 0)),
+        "speaker_map": None,
+        "utterances": [
+            {"speaker": u["speaker"], "start": int(u["start"]),
+             "end": int(u["end"]), "text": (u.get("text") or "").strip()}
+            for u in utterances
+        ],
+    }
+
+
+def write_utterances_sidecar(output_path: Path, utterances: list, metadata: dict) -> Path | None:
+    """Fail-soft: a sidecar problem never fails a completed transcription."""
+    sidecar = utterances_sidecar_path(output_path)
+    try:
+        with sidecar.open("x", encoding="utf-8") as handle:
+            json.dump(_aai_utterances_sidecar(utterances, metadata), handle, ensure_ascii=False, indent=1)
+            handle.write("\n")
+    except Exception as e:  # noqa: BLE001
+        print(f"   ⚠ Utterances sidecar not written ({type(e).__name__}); voiceprint check will be skipped.")
+        return None
+    print(f"   Utterances sidecar: {sidecar.name}")
+    return sidecar
+
+
 def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
                            context: str | None) -> None:
     """Transcribe via AssemblyAI pre-recorded API (raw HTTP per integration guide).
@@ -868,6 +910,7 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
     transcript = _aai_format_transcript(utterances, audio_path, args.description, r)
     write_transcript(output_path, transcript)
     print(f"\n✅ Transcript saved: {output_path}")
+    write_utterances_sidecar(output_path, utterances, r)
 
     if args.archive_dir is not None:
         archive_to_ogg(audio_path, args.archive_dir)
@@ -937,6 +980,9 @@ def main():
     # Preserve previous transcripts and source aliases; do this before provider work.
     if output_path.exists() or output_path.is_symlink():
         raise FileExistsError("Transcript destination already exists; choose a new output path.")
+    sidecar_path = utterances_sidecar_path(output_path)
+    if args.backend == "assemblyai" and (sidecar_path.exists() or sidecar_path.is_symlink()):
+        raise FileExistsError("Utterances sidecar for this transcript already exists; choose a new output path.")
     if args.archive_dir is not None:
         archive_path = archive_destination(audio_path, args.archive_dir)
         if archive_path == output_path.resolve():

@@ -63,5 +63,17 @@ if ! "${VENV_DIR}/bin/python3" -c "import ${MODULE}" 2>/dev/null; then
   VIRTUAL_ENV="${VENV_DIR}" uv pip install -q "$PACKAGE"
 fi
 
+# Optional voiceprint speaker-ID dependencies (Step 2.5a): opt-in via MEETING_DOCUMENTER_VOICEPRINT=1
+# in the trusted config or shell. Large (torch). Non-fatal: transcription works without them.
+# Model weights are fetched separately: scripts/voiceprint/fetch_models.py
+if [[ "${MEETING_DOCUMENTER_VOICEPRINT:-0}" == "1" ]]; then
+  if ! "${VENV_DIR}/bin/python3" -c "import importlib.util as u, sys; sys.exit(any(u.find_spec(m) is None for m in ('numpy', 'scipy', 'yaml', 'soundfile', 'torch', 'torchaudio', 'sherpa_onnx')))" 2>/dev/null; then
+    echo "📦 Installing optional voiceprint dependencies (torch, sherpa-onnx; large)..." >&2
+    if ! VIRTUAL_ENV="${VENV_DIR}" uv pip install -q -r "${SKILL_DIR}/scripts/voiceprint/requirements.txt"; then
+      echo "⚠️  Voiceprint dependency install failed; continuing without speaker ID." >&2
+    fi
+  fi
+fi
+
 # 4. Delegate to Python pipeline
 exec "${VENV_DIR}/bin/python3" "${SKILL_DIR}/scripts/transcribe_pipeline.py" "$@"

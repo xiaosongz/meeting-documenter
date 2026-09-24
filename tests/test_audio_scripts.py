@@ -125,7 +125,8 @@ class EnvironmentLoaderTests(unittest.TestCase):
         self.env_file.chmod(0o600)
         self.environment = {
             key: value for key, value in os.environ.items()
-            if key not in {"MEETING_DOCUMENTER_ENV_FILE", "MEETING_DOCUMENTER_TEST_MARKER"}
+            if key not in {"MEETING_DOCUMENTER_ENV_FILE", "MEETING_DOCUMENTER_TEST_MARKER",
+                           "MEETING_DOCUMENTER_VOICEPRINT"}
         }
 
     def run_wrapper(self):
@@ -178,6 +179,29 @@ class EnvironmentLoaderTests(unittest.TestCase):
                 result = subprocess.run(["bash", str(self.wrapper), "--help", *flags], env=self.environment, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(log.read_text().strip(), expected)
+
+    def test_voiceprint_dependencies_are_opt_in(self):
+        python = self.root / ".venv" / "bin" / "python3"
+        log = self.root / "imports.log"
+        python.write_text(
+            '#!/usr/bin/env bash\n'
+            'if [[ "$1" == "-c" ]]; then printf "%s\\n" "$2" >> "$MEETING_DOCUMENTER_IMPORT_LOG"; fi\n'
+        )
+        self.environment["MEETING_DOCUMENTER_IMPORT_LOG"] = str(log)
+        for enabled, checks in [(None, 1), ("0", 1), ("1", 2)]:
+            with self.subTest(enabled=enabled):
+                log.unlink(missing_ok=True)
+                env = dict(self.environment)
+                if enabled is not None:
+                    env["MEETING_DOCUMENTER_VOICEPRINT"] = enabled
+                result = subprocess.run(["bash", str(self.wrapper), "--help"], env=env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                lines = log.read_text().strip().splitlines()
+                self.assertEqual(len(lines), checks)
+                self.assertEqual(lines[0], "import requests")
+                if checks == 2:
+                    self.assertIn("sherpa_onnx", lines[1])
 
     def test_explicit_empty_env_override_skips_default_file(self):
         self.environment["MEETING_DOCUMENTER_ENV_FILE"] = ""
