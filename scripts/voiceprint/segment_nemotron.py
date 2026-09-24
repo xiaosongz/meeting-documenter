@@ -20,6 +20,9 @@ Memory: the checkpoint's offline configuration (340-frame chunks + 40 look-ahead
 FIFO 40, cache update 300) is run *chunk by chunk* through the streaming API, so the
 spectrogram is never computed for the whole file at once. A single offline forward on
 a 2 h file peaked at 8.8 GB RSS; the chunked form bounds it by one 30.4 s chunk.
+
+Device: CPU is the default and the reference. MPS is ~2.7× faster but not bit-close
+(max |Δp| 0.32, 99.9 % binary frame agreement on an AMI meeting).
 """
 
 from __future__ import annotations
