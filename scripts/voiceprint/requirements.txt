@@ -8,3 +8,4 @@ soundfile
 torch
 torchaudio
 sherpa-onnx
+onnxruntime   # boundary layer (pyannote segmentation-3.0 ONNX)

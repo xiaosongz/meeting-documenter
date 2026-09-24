@@ -21,9 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from voiceprint.embedders import (  # noqa: E402
     ALL_NAMES, ONNX_SPECS, REDIMNET2_REPO, REDIMNET2_SHA, TORCH_SPECS, model_dir, sha256_file,
 )
+from voiceprint.segment import SEG3  # noqa: E402  (boundary layer; pin lives in segment.py)
 from voiceprint.vad import SILERO_V5  # noqa: E402  (speech VAD for clip gating; pin lives in vad.py)
 
-FETCH_NAMES = ALL_NAMES + [SILERO_V5.name]
+FETCH_NAMES = ALL_NAMES + [SILERO_V5.name, SEG3.name]
 
 # Inference-only subset of the upstream repo (training code + images skipped).
 _VENDOR_KEEP = ("redimnet2/", "LICENSE", "README.md", "hubconf.py", "requirements.txt")
@@ -70,6 +71,29 @@ def _vendor_redimnet2_code(code_dir: Path) -> None:
     print(f"saved   {code_dir}")
 
 
+def _fetch_archive_member(spec) -> None:
+    """Download a pinned .tar.bz2, then extract the pinned member (+ licence) next to it."""
+    if spec.path.is_file() and sha256_file(spec.path) == spec.sha256:
+        print(f"ok      {spec.path.name} ({spec.name})")
+        return
+    archive = spec.dir / spec.archive
+    _download(spec.url, archive, spec.archive_sha256)
+    with tarfile.open(archive, mode="r:bz2") as tf:
+        for member in (spec.member, *spec.extra_members):
+            src = tf.extractfile(member)
+            if src is None:
+                raise RuntimeError(f"{member} missing from {archive}")
+            part = spec.dir / (Path(member).name + ".part")
+            part.write_bytes(src.read())
+            part.replace(spec.dir / Path(member).name)
+    got = sha256_file(spec.path)
+    if got != spec.sha256:
+        spec.path.unlink()
+        raise RuntimeError(f"sha256 mismatch for {spec.path}: got {got}, pinned {spec.sha256}")
+    archive.unlink()
+    print(f"saved   {spec.path}")
+
+
 def fetch(names: list[str]) -> None:
     for n in names:
         if n in TORCH_SPECS:
@@ -81,6 +105,8 @@ def fetch(names: list[str]) -> None:
             _download(s.url, s.path, s.sha256)
         elif n == SILERO_V5.name:
             _download(SILERO_V5.url, SILERO_V5.path, SILERO_V5.sha256)
+        elif n == SEG3.name:
+            _fetch_archive_member(SEG3)
         else:
             raise SystemExit(f"unknown model {n!r}; known: {FETCH_NAMES}")
 
