@@ -201,3 +201,11 @@ def test_stranger_resembling_an_enrolled_track_is_demoted():
     off = T.decode_units(units, trs, E, ["P0", "P1"], T.TrackParams(foreign_p=1.0))
     assert on.label == ["P0"] * 3 + [UNKNOWN] * 3
     assert off.label == ["P0"] * 6
+
+
+def test_track_without_any_embedding_is_unknown():
+    units = [T.Unit(0, 0.0, 0.6, [(0.0, 0.6)], 0.6), T.Unit(0, 5.0, 5.4, [(5.0, 5.4)], 0.4)]
+    trs = T.tracks_from_segmentation(slot_seg([(0, 0, 6)], n_slots=1), T.TrackParams())
+    for lam in (0.0, 10.0):
+        dec = T.decode_units(units, trs, np.zeros((2, 3), np.float32), ["A", "B"], T.TrackParams(switch=lam))
+        assert dec.label == [UNKNOWN, UNKNOWN]

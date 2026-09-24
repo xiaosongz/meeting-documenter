@@ -497,6 +497,7 @@ def decode_units(units: list[Unit], trs: Tracks, E: np.ndarray, names: list[str]
         idx.sort(key=lambda i: units[i].t0)
         post[idx] = hmm_posteriors(E[idx].astype(np.float64), params.switch)
     state = post.argmax(1)
+    state[post[:, K] >= post[np.arange(len(state)), state] - 1e-6] = K     # ties (no evidence) → UNKNOWN
     if params.foreign_p != 1.0 and K:
         state = demote_foreign(units, post, state, K, params, E)
     state = resolve_conflicts(units, trs, post, state, K, params)
