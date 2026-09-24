@@ -32,7 +32,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .timeline import UNKNOWN, Timeline, Turn, derive_exclusive
+from .timeline import GUEST_PREFIX, UNKNOWN, Timeline, Turn, derive_exclusive, parse_label
 
 MAX_GAP = 0.5               # s; nearest-segment fallback for words in a gap
 STRADDLE_MAX_SHARE = 0.6    # top label's share of top-two intersection at or below which a word straddles
@@ -307,6 +307,23 @@ def format_ts(seconds: float) -> str:
     if s >= 3600:
         return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}"
     return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def display_label(label: str) -> str:
+    """Readable transcript label: names as they are, GUEST_2 → "Guest 2", UNKNOWN →
+    "Unknown speaker", UNCERTAIN(A|B) → "A or B (uncertain)", OVERLAP(A|B) → "A + B (overlap)"."""
+    kind, alts = parse_label(label)
+    if kind == "uncertain":
+        shown = [display_label(a) for a in alts]
+        return (", ".join(shown[:-1]) + " or " + shown[-1] if len(shown) > 1 else "".join(shown)) \
+            + " (uncertain)"
+    if kind == "overlap":
+        return " + ".join(display_label(a) for a in alts) + " (overlap)"
+    if kind == "guest":
+        return "Guest " + label[len(GUEST_PREFIX):]
+    if kind == "unknown":
+        return "Unknown speaker"
+    return label
 
 
 def render_body(utterances: list[Utterance], *, labels: bool = True) -> str:

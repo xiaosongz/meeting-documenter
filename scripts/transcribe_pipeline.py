@@ -39,11 +39,20 @@ CHUNK_THRESHOLD = 3600  # 60 minutes — split if longer
 DEFAULT_MODEL = "gemini-2.5-flash"
 ASSEMBLYAI_BASE = "https://api.assemblyai.com"
 ASSEMBLYAI_MODELS = ["universal-3-5-pro"]
-# Experimental (until local speaker tracking is integrated): AssemblyAI returns words only
-# (speaker_labels=false, no cloud voice embeddings) and a word-level sidecar is written.
+# Local speaker tracking: AssemblyAI returns words only (speaker_labels=false, no cloud voice
+# embeddings), `identify_speakers.py track` works out who speaks when from enrolled voiceprints,
+# and each word takes the speaker of the timeline it falls in. Opt-in per run (--local-speakers)
+# or per install (MEETING_DOCUMENTER_LOCAL_SPEAKERS=1; =0 opts out). To make it the default for
+# everyone, the maintainer sets LOCAL_SPEAKERS_DEFAULT = True.
 LOCAL_SPEAKERS_ENV = "MEETING_DOCUMENTER_LOCAL_SPEAKERS"
+LOCAL_SPEAKERS_DEFAULT = False
+TIMELINE_DIR_ENV = "MEETING_DOCUMENTER_TIMELINE_DIR"
+TRACK_CLI = SKILL_DIR / "scripts" / "identify_speakers.py"
+TRACK_CHECK_TIMEOUT = 180    # s; the readiness probe loads no models
 LOCAL_PARAGRAPH_PAUSE = 2.0  # s; unlabelled paragraphs break at longer pauses
 LOCAL_PARAGRAPH_MAX = 30.0   # s; ...or after a sentence end once longer than this
+REVIEW_MAX_ITEMS = 40        # uncertain/guest/unknown turns listed for spot-checking in the header
+MEETING_KEY_RE = re.compile(r"(\d{4}-\d{2}-\d{2}-\d{4})")
 
 SUPPORTED_FORMATS = {
     ".ogg": "audio/ogg", ".mp3": "audio/mp3", ".wav": "audio/wav",
@@ -686,16 +695,58 @@ def _ms_to_ts(ms: int) -> str:
     return f"{s // 60:02d}:{s % 60:02d}"
 
 
+def _aai_body_line(u: dict) -> str:
+    """`**[MM:SS] Label:** text`: a readable local label, `Speaker X` for an AssemblyAI cluster,
+    or no label (words-only paragraphs whose speakers are not attributed)."""
+    ts, text = _ms_to_ts(u["start"]), u["text"].strip()
+    if u.get("label"):
+        return f"**[{ts}] {u['label']}:** {text}"
+    if u["speaker"] is None:
+        return f"**[{ts}]** {text}"
+    return f"**[{ts}] Speaker {u['speaker']}:** {text}"
+
+
+def _minutes(seconds: float) -> str:
+    return f"{seconds / 60:.1f} min" if seconds >= 60 else f"{seconds:.0f} s"
+
+
+def _tracking_header(tracking: dict, utterances: list) -> tuple[str, str, str]:
+    """(extra header lines, count text, note) for a transcript labelled by local tracking."""
+    speakers = ", ".join(f"{label} {_minutes(sec)}" for label, sec in tracking["speakers"][:10])
+    extra = (f"**Local Speaker Tracking:** `{tracking['backend']}` boundaries · "
+             f"`{tracking['model_id']}` voiceprints · calibration `{tracking['calibration']}` · "
+             f"timeline `{tracking['timeline']}`\n")
+    if tracking.get("roster"):
+        extra += f"**Roster:** {', '.join(tracking['roster'])}\n"
+    count_text = f"{len(utterances)} turns · {speakers or 'no speech attributed'}"
+    note = """> [!note] Speakers were attributed locally from enrolled voiceprints (who speaks when).
+> AssemblyAI ran without diarization, so no cloud voice embeddings were created.
+> "A or B (uncertain)": the voices could not be told apart; "Guest n": an unenrolled
+> voice; "Unknown speaker": speech no voiceprint matched. Check names against the
+> content and roster (SKILL.md Step 2.5) and spot-check the review list."""
+    review = [u for u in utterances if u.get("kind") in ("uncertain", "guest", "unknown", "overlap")]
+    if review:
+        lines = [f"> - [{_ms_to_ts(u['start'])}] {u['label']}, {(u['end'] - u['start']) / 1000:.1f} s"
+                 for u in review[:REVIEW_MAX_ITEMS]]
+        if len(review) > REVIEW_MAX_ITEMS:
+            lines.append(f"> - …and {len(review) - REVIEW_MAX_ITEMS} more (see the timeline)")
+        note += (f"\n\n> [!warning]- Speaker review: {len(review)} turn(s) to spot-check\n"
+                 + "\n".join(lines))
+    return extra, count_text, note
+
+
 def _aai_format_transcript(utterances: list, audio_path: Path,
                            description: str | None,
                            metadata: dict | None = None,
-                           *, local_speakers: bool = False) -> str:
+                           *, local_speakers: bool = False, tracking: dict | None = None,
+                           warning: str | None = None) -> str:
     """Format AssemblyAI utterances into the same markdown shape as the Gemini path.
 
-    Speakers stay as acoustic clusters (Speaker A/B/C/D) — AssemblyAI does
-    diarization, not voice-ID. SKILL.md Step 2.5 maps clusters → names.
-    With local_speakers, AssemblyAI ran without diarization: utterances are
-    unlabelled paragraphs (speaker None) until local attribution runs.
+    Default: speakers stay as acoustic clusters (Speaker A/B/C/D) — AssemblyAI does
+    diarization, not voice-ID; SKILL.md Step 2.5 maps clusters → names.
+    With local_speakers, AssemblyAI ran without diarization: `tracking` (a summary of the
+    local speaker timeline) labels the utterances; without it they are unlabelled paragraphs.
+    `warning` adds a warning callout (local tracking unavailable or failed).
     """
     now = datetime.now()
     total_dur = int(utterances[-1]["end"] / 1000) if utterances else 0
@@ -712,17 +763,23 @@ def _aai_format_transcript(utterances: list, audio_path: Path,
         language_text += f" ({language_confidence:.4f})"
     expected_text = str(speakers_expected) if speakers_expected is not None else "not set"
 
-    description = description or (
-        f"Transcript of {audio_path.stem}, {format_duration(total_dur)}, "
-        + ("AssemblyAI pre-recorded STT (words only; speakers attributed locally)" if local_speakers
-           else f"AssemblyAI pre-recorded STT ({n_speakers} diarized speakers)")
-    )
+    if local_speakers and tracking:
+        stt_text = "AssemblyAI pre-recorded STT (words only) with local speaker tracking"
+    elif local_speakers:
+        stt_text = "AssemblyAI pre-recorded STT (words only; speakers attributed locally)"
+    else:
+        stt_text = f"AssemblyAI pre-recorded STT ({n_speakers} diarized speakers)"
+    description = description or f"Transcript of {audio_path.stem}, {format_duration(total_dur)}, {stt_text}"
     desc_line = "\ndescription: " + json.dumps(description, ensure_ascii=False)
     requested_models_text = ", ".join(metadata.get("requested_speech_models") or submitted_models) or "not recorded"
     model_used = metadata.get("speech_model_used") or "not returned"
     requested_language = metadata.get("requested_language_code") or "not recorded"
 
-    if local_speakers:
+    extra = ""
+    if local_speakers and tracking:
+        tool_text = "AssemblyAI pre-recorded STT (words only, no cloud diarization) + local speaker tracking"
+        extra, count_text, note = _tracking_header(tracking, utterances)
+    elif local_speakers:
         tool_text = "AssemblyAI pre-recorded STT (words only, no cloud diarization)"
         count_text = f"{len(utterances)} paragraphs · speakers not yet attributed"
         note = """> [!note] Speakers are not labelled yet. AssemblyAI ran without diarization
@@ -735,6 +792,8 @@ def _aai_format_transcript(utterances: list, audio_path: Path,
 > AssemblyAI does diarization, not voice identification. Map clusters → real
 > names using the attendee roster + content cues (SKILL.md Step 2.5) before
 > writing the summary."""
+    if warning:
+        note = f"> [!warning] {warning}\n\n{note}"
 
     header = f"""---
 title: {json.dumps("Meeting Transcript - " + audio_path.stem, ensure_ascii=False)}
@@ -759,18 +818,14 @@ tags:
 **AAI Requested Language:** `{requested_language}`
 **AAI Detected Language:** `{language_text}`
 **AAI Speakers Expected:** `{expected_text}`
-**Duration:** ~{format_duration(total_dur)} · {count_text}
+{extra}**Duration:** ~{format_duration(total_dur)} · {count_text}
 
 {note}
 
 ---
 
 """
-    body = "\n\n".join(
-        f"**[{_ms_to_ts(u['start'])}] Speaker {u['speaker']}:** {u['text'].strip()}"
-        if u["speaker"] is not None else f"**[{_ms_to_ts(u['start'])}]** {u['text'].strip()}"
-        for u in utterances
-    )
+    body = "\n\n".join(_aai_body_line(u) for u in utterances)
     return header + body + "\n"
 
 
@@ -853,12 +908,207 @@ def _aai_local_paragraphs(words: list) -> list:
              "text": t.text} for t in turns if t.text]
 
 
+# ─── Local speaker tracking ─────────────────────────────────────────────────
+
+def _voiceprint_module(name: str):
+    """A standard-library voiceprint module (timeline, words, config): no voiceprint extras."""
+    _voiceprint_words()                          # puts scripts/ on sys.path
+    import importlib
+    return importlib.import_module(f"voiceprint.{name}")
+
+
+def local_speakers_default() -> bool:
+    value = os.environ.get(LOCAL_SPEAKERS_ENV)
+    return LOCAL_SPEAKERS_DEFAULT if value not in ("0", "1") else value == "1"
+
+
+ROSTER_HEADING = re.compile(r"^\s*(possible speakers|speakers|attendees|participants|roster)\s*:\s*(.*)$", re.I)
+
+
+def roster_from_context(context: str | None) -> list[str]:
+    """Attendee names from a context file (CONTEXT_TEMPLATE.md): the `- Name (role)` bullets
+    under a "Possible speakers:" (or Speakers/Attendees/Participants/Roster) line, or a
+    comma-separated list on that line. Bracketed template placeholders are ignored."""
+    names: list[str] = []
+    lines = (context or "").splitlines()
+    for i, line in enumerate(lines):
+        m = ROSTER_HEADING.match(line)
+        if not m:
+            continue
+        found = m.group(2).split(",")
+        for nxt in lines[i + 1:]:
+            b = re.match(r"^\s*[-*•]\s+(.*)$", nxt)
+            if not b:
+                break
+            found.append(b.group(1))
+        for item in found:
+            name = re.sub(r"\s*[(（].*$", "", item).strip().strip("*_`")
+            if name and not name.startswith("[") and name not in names:
+                names.append(name)
+    return names
+
+
+def timeline_path_for(output_path: Path) -> Path:
+    """`<transcript stem>.timeline.json` in MEETING_DOCUMENTER_TIMELINE_DIR (default
+    ${XDG_DATA_HOME:-~/.local/share}/meeting-documenter/timelines). Refused inside the notes
+    vault or this clone: the timeline is private working data, not a note."""
+    raw = os.environ.get(TIMELINE_DIR_ENV)
+    if raw:
+        directory = Path(raw).expanduser()
+    else:
+        base = os.environ.get("XDG_DATA_HOME")
+        directory = (Path(base).expanduser() if base else Path.home() / ".local" / "share") \
+            / "meeting-documenter" / "timelines"
+    path = directory.absolute() / (output_path.stem + ".timeline.json")
+    _voiceprint_module("config").assert_outside_vault(path)
+    return path
+
+
+@dataclass
+class LocalTrackingPlan:
+    roster: list[str]
+    channel: str | None
+    backend: str
+    meeting_key: str | None
+    timeline_path: Path
+    check: dict
+
+
+def _track_cli_args(args, roster: list[str]) -> list[str]:
+    extra = ["--roster", ",".join(roster)] if roster else []
+    return extra + (["--channel", args.channel] if args.channel else [])
+
+
+def plan_local_tracking(args, audio_path: Path, output_path: Path,
+                        context: str | None) -> tuple[LocalTrackingPlan | None, str]:
+    """(plan, "") when local tracking can name speakers, else (None, reason). Runs the cheap
+    `track-check` probe (no models, no audio) before anything is uploaded."""
+    roster = [x.strip() for x in (args.roster or "").split(",") if x.strip()] or roster_from_context(context)
+    try:
+        timeline_path = timeline_path_for(output_path)
+    except ValueError as e:
+        return None, f"timeline location refused: {e}"
+    cmd = [sys.executable, str(TRACK_CLI), "track-check", "--backend", args.track_backend,
+           *(["--roster", ",".join(roster)] if roster else [])]
+    try:
+        probe = subprocess.run(cmd, capture_output=True, text=True, timeout=TRACK_CHECK_TIMEOUT)
+        check = json.loads(probe.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as e:
+        return None, f"readiness check failed ({type(e).__name__})"
+    if not check.get("ready"):
+        return None, f"{check.get('status', 'not ready')}: {check.get('reason', '')}".rstrip(": ")
+    if timeline_path.exists() or timeline_path.is_symlink():
+        raise FileExistsError("Speaker timeline for this transcript already exists; choose a new output path.")
+    key = next((m.group(1) for p in (output_path, audio_path) if (m := MEETING_KEY_RE.search(p.name))), None)
+    return LocalTrackingPlan(roster, args.channel, check.get("backend") or args.track_backend, key,
+                             timeline_path, check), ""
+
+
+class LocalTracker:
+    """`identify_speakers.py track` in a child process, started before the upload so it runs
+    while AssemblyAI transcribes. Its timeline, status and log stay in a private temporary
+    directory until `result()`; `close()` stops a still-running child and removes them."""
+
+    def __init__(self, plan: LocalTrackingPlan, audio_path: Path, args):
+        self.plan = plan
+        self._tmp = tempfile.TemporaryDirectory(prefix="meeting_documenter_track_")
+        tmp = Path(self._tmp.name)
+        self.out, self.status, self.log_path = tmp / "timeline.json", tmp / "status.json", tmp / "track.log"
+        cmd = [sys.executable, str(TRACK_CLI), "track", "--audio", str(audio_path),
+               "--backend", plan.backend, "--out", str(self.out), "--json", str(self.status),
+               *(["--meeting-key", plan.meeting_key] if plan.meeting_key else []),
+               *_track_cli_args(args, plan.roster)]
+        self._log = self.log_path.open("w", encoding="utf-8")
+        self.proc = subprocess.Popen(cmd, stdout=self._log, stderr=subprocess.STDOUT)
+
+    def result(self, timeout: float):
+        """(Timeline, status dict) or (None, reason)."""
+        try:
+            rc = self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.close()
+            return None, f"timed out after {timeout:g} s"
+        status = {}
+        if self.status.exists():
+            try:
+                status = json.loads(self.status.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+        if status.get("status") != "ok" or not self.out.exists():
+            reason = status.get("reason") or f"exit code {rc}"
+            return None, f"{status.get('status', 'failed')}: {reason}"[:300]
+        try:
+            return _voiceprint_module("timeline").from_json(self.out.read_text(encoding="utf-8")), status
+        except (OSError, ValueError, KeyError) as e:
+            return None, f"unreadable timeline ({type(e).__name__})"
+
+    def log_tail(self, n: int = 5) -> str:
+        try:
+            return "\n".join(self.log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:])
+        except OSError:
+            return ""
+
+    def close(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        self._log.close()
+        self._tmp.cleanup()
+
+
+def _aai_tracked_turns(words: list, tl) -> list:
+    """Words attributed to the local timeline, regrouped into turns with readable labels."""
+    vp_words = _voiceprint_words()
+    turns = vp_words.rebuild_turns(vp_words.assign_words(vp_words.words_from_assemblyai(words), tl),
+                                   max_turn_s=LOCAL_PARAGRAPH_MAX)
+    return [{"speaker": t.speaker, "kind": t.kind, "label": vp_words.display_label(t.speaker),
+             "start": int(round(t.start * 1000)), "end": int(round(t.end * 1000)), "text": t.text}
+            for t in turns if t.text]
+
+
+def _tracking_summary(plan: LocalTrackingPlan, tl) -> dict:
+    vp_words = _voiceprint_words()
+    speech: dict[str, float] = {}
+    for t in tl.exclusive:
+        speech[t.speaker] = speech.get(t.speaker, 0.0) + (t.end - t.start)
+    ranked = sorted(speech.items(), key=lambda kv: -kv[1])
+    calibration = tl.meta.get("calibration") or {}
+    return {"backend": tl.meta.get("backend") or plan.backend,
+            "model_id": tl.meta.get("model_id") or plan.check.get("model_id") or "unknown",
+            "calibration": calibration.get("source") or plan.check.get("calibration") or "unknown",
+            "timeline": plan.timeline_path.name, "roster": plan.roster,
+            "speakers": [(vp_words.display_label(k), v) for k, v in ranked]}
+
+
+def write_timeline(plan: LocalTrackingPlan, tl, audio_path: Path, output_path: Path) -> Path | None:
+    """Fail-soft like the sidecars: the transcript is already written."""
+    try:
+        tl.meta.update(transcript=output_path.name, audio=audio_path.name,
+                       words=words_sidecar_path(output_path).name)
+        if plan.channel:
+            tl.meta.setdefault("channel", plan.channel)
+        plan.timeline_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(plan.timeline_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(_voiceprint_module("timeline").to_json(tl) + "\n")
+    except Exception as e:  # noqa: BLE001
+        print(f"   ⚠ Speaker timeline not written ({type(e).__name__}); enrollment from it will be unavailable.")
+        return None
+    print(f"   Speaker timeline: {plan.timeline_path}")
+    return plan.timeline_path
+
+
 def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
-                           context: str | None) -> None:
+                           context: str | None, plan: LocalTrackingPlan | None = None) -> None:
     """Transcribe via AssemblyAI pre-recorded API (raw HTTP per integration guide).
 
     Sends the original file in one request; Gemini preparation and splitting
-    are not applied. Provider file limits apply.
+    are not applied. Provider file limits apply. With a local tracking `plan`,
+    AssemblyAI returns words only and the local speaker timeline labels them.
     """
     try:
         import requests
@@ -877,10 +1127,10 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
     print(f"   Duration: {format_duration(info['duration_int'])}")
     print(f"   Size: {info['file_size'] / 1048576:.1f} MB")
     speech_models = args.aai_speech_models or ASSEMBLYAI_MODELS
-    local_speakers = args.local_speakers
+    local_speakers = plan is not None
     print(f"   Backend: AssemblyAI ({' → '.join(speech_models)})")
     if local_speakers:
-        print("   Speakers: local attribution (AssemblyAI speaker_labels off, word sidecar)")
+        print("   Speakers: local speaker tracking (AssemblyAI speaker_labels off, word sidecar)")
 
     # Optional high-precision keyterm boost (names + domain jargon)
     keyterms: list[str] = []
@@ -894,18 +1144,8 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
     if context:
         print(f"   Prompt context: {len(context)} chars")
 
-    # 1) Upload the raw binary body, not multipart form data.
-    print("\n⬆️  Uploading (raw binary)...")
-    with open(audio_path, "rb") as f:
-        up = requests.post(f"{ASSEMBLYAI_BASE}/v2/upload", headers=headers,
-                           data=f, timeout=600)
-    if up.status_code >= 400:
-        raise RuntimeError(f"AssemblyAI upload failed (HTTP {up.status_code}).")
-    upload_url = up.json()["upload_url"]
-
-    # 2) Submit the explicitly selected speech models.
+    # The request (the upload URL is added once the audio is uploaded).
     body = {
-        "audio_url": upload_url,
         "speech_models": speech_models,
         "speaker_labels": not local_speakers,
     }
@@ -929,44 +1169,50 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
         else ""
     )
     labels_msg = "speaker_labels=false" if local_speakers else f"speaker_labels{speaker_msg}"
-    print(f"📤 Submitting ({' → '.join(speech_models)}, {labels_msg})...")
-    sub = requests.post(f"{ASSEMBLYAI_BASE}/v2/transcript",
-                        headers={**headers, "content-type": "application/json"},
-                        json=body, timeout=60)
-    if sub.status_code >= 400:
-        raise RuntimeError(f"AssemblyAI submission failed (HTTP {sub.status_code}).")
-    tid = sub.json()["id"]
-    print(f"   Transcript ID: {tid}")
 
-    # 3) Poll
-    print("⏳ Polling...")
-    t0 = time.monotonic()
-    while True:
-        remaining = args.aai_poll_timeout - (time.monotonic() - t0)
-        if remaining <= 0:
-            raise TimeoutError("AssemblyAI polling timed out; the remote job may still be running.")
-        poll = requests.get(f"{ASSEMBLYAI_BASE}/v2/transcript/{tid}",
-                            headers=headers, timeout=min(60, remaining))
-        if poll.status_code >= 400:
-            raise RuntimeError(f"AssemblyAI polling failed (HTTP {poll.status_code}).")
-        r = poll.json()
-        st = r.get("status")
-        if st == "completed":
-            print(f"   ✅ Completed in {time.monotonic() - t0:.0f}s")
-            break
-        if st == "error":
-            raise RuntimeError("AssemblyAI transcription failed; inspect the job in your provider dashboard.")
-        if st not in {"queued", "processing"}:
-            raise RuntimeError("AssemblyAI returned an unexpected job status.")
-        time.sleep(min(5, max(0, args.aai_poll_timeout - (time.monotonic() - t0))))
+    # Local tracking runs on this machine while AssemblyAI transcribes.
+    tracker = LocalTracker(plan, audio_path, args) if plan else None
+    tracked = None
+    try:
+        if tracker:
+            print(f"🎙️  Local speaker tracking started ({plan.backend}"
+                  + (f", roster: {', '.join(plan.roster)}" if plan.roster else ", everyone enrolled") + ")")
+        r = _aai_transcribe(requests, headers, audio_path, body, args.aai_poll_timeout,
+                            f"{' → '.join(speech_models)}, {labels_msg}")
+        if tracker:
+            print("⏳ Waiting for local speaker tracking...")
+            tracked = tracker.result(args.track_timeout)
+            if tracked[0] is None:
+                print(f"   ⚠ Local speaker tracking failed ({tracked[1]})")
+                tail = tracker.log_tail()
+                if tail:
+                    print("   " + tail.replace("\n", "\n   "))
+    finally:
+        if tracker:
+            tracker.close()
 
+    warning = getattr(args, "local_fallback", None)
+    tracking = None
     if local_speakers:
         words = r.get("words") or []
         if not words:
             raise RuntimeError("AssemblyAI returned no words; no transcript was written.")
-        utterances = _aai_local_paragraphs(words)
+        tl = tracked[0] if tracked else None
+        if tl is not None:
+            status = tracked[1]
+            utterances = _aai_tracked_turns(words, tl)
+            tracking = _tracking_summary(plan, tl)
+            info = status.get("info") or {}
+            print(f"   Words: {len(words)} | turns: {len(utterances)} | local tracking "
+                  f"{info.get('xrt', '?')}x real time, peak footprint {info.get('peak_footprint_gb', '?')} GB")
+            for label, sec in tracking["speakers"]:
+                print(f"     {label:<32} {sec:8.1f} s")
+        else:
+            utterances = _aai_local_paragraphs(words)
+            warning = (f"Local speaker tracking failed ({tracked[1] if tracked else 'not run'}); speakers "
+                       "are not labelled. Map speakers from content, or re-run the transcription.")
+            print(f"   Words: {len(words)} | paragraphs: {len(utterances)} (speakers not attributed)")
         speakers = []
-        print(f"   Words: {len(words)} | paragraphs: {len(utterances)} (speakers attributed locally)")
     else:
         utterances = r.get("utterances") or []
         if not utterances:
@@ -980,11 +1226,14 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
     r["speakers_expected"] = args.speakers_expected
 
     transcript = _aai_format_transcript(utterances, audio_path, args.description, r,
-                                        local_speakers=local_speakers)
+                                        local_speakers=local_speakers, tracking=tracking,
+                                        warning=warning)
     write_transcript(output_path, transcript)
     print(f"\n✅ Transcript saved: {output_path}")
     if local_speakers:
         write_words_sidecar(output_path, words, r)
+        if tracking:
+            write_timeline(plan, tl, audio_path, output_path)
     else:
         write_utterances_sidecar(output_path, utterances, r)
 
@@ -995,12 +1244,62 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
 
     print(f"\n{'=' * 50}")
     print(f"📊 AssemblyAI backend complete")
-    if local_speakers:
-        print("   Speakers: not labelled (attribute locally from the words sidecar)")
+    if tracking:
+        review = sum(1 for u in utterances if u["kind"] in ("uncertain", "guest", "unknown", "overlap"))
+        print(f"   Speakers: tracked locally; {review} uncertain/guest/unknown turn(s) to review (Step 2.5)")
+    elif local_speakers:
+        print("   Speakers: not labelled (local tracking failed; see the warning in the transcript)")
     else:
         print(f"   Speakers: {len(speakers)} clusters (map A/B/C/D → names in Step 2.5)")
+    if warning:
+        print(f"   ⚠ {warning}")
     print(f"   Output: {output_path}")
     print(f"{'=' * 50}")
+
+
+def _aai_transcribe(requests, headers: dict, audio_path: Path, body: dict, poll_timeout: float,
+                    submit_msg: str) -> dict:
+    """Upload the raw audio, submit `body` with its upload URL, and poll until completed."""
+    # 1) Upload the raw binary body, not multipart form data.
+    print("\n⬆️  Uploading (raw binary)...")
+    with open(audio_path, "rb") as f:
+        up = requests.post(f"{ASSEMBLYAI_BASE}/v2/upload", headers=headers,
+                           data=f, timeout=600)
+    if up.status_code >= 400:
+        raise RuntimeError(f"AssemblyAI upload failed (HTTP {up.status_code}).")
+    upload_url = up.json()["upload_url"]
+
+    # 2) Submit the explicitly selected speech models.
+    print(f"📤 Submitting ({submit_msg})...")
+    sub = requests.post(f"{ASSEMBLYAI_BASE}/v2/transcript",
+                        headers={**headers, "content-type": "application/json"},
+                        json={"audio_url": upload_url, **body}, timeout=60)
+    if sub.status_code >= 400:
+        raise RuntimeError(f"AssemblyAI submission failed (HTTP {sub.status_code}).")
+    tid = sub.json()["id"]
+    print(f"   Transcript ID: {tid}")
+
+    # 3) Poll
+    print("⏳ Polling...")
+    t0 = time.monotonic()
+    while True:
+        remaining = poll_timeout - (time.monotonic() - t0)
+        if remaining <= 0:
+            raise TimeoutError("AssemblyAI polling timed out; the remote job may still be running.")
+        poll = requests.get(f"{ASSEMBLYAI_BASE}/v2/transcript/{tid}",
+                            headers=headers, timeout=min(60, remaining))
+        if poll.status_code >= 400:
+            raise RuntimeError(f"AssemblyAI polling failed (HTTP {poll.status_code}).")
+        r = poll.json()
+        st = r.get("status")
+        if st == "completed":
+            print(f"   ✅ Completed in {time.monotonic() - t0:.0f}s")
+            return r
+        if st == "error":
+            raise RuntimeError("AssemblyAI transcription failed; inspect the job in your provider dashboard.")
+        if st not in {"queued", "processing"}:
+            raise RuntimeError("AssemblyAI returned an unexpected job status.")
+        time.sleep(min(5, max(0, poll_timeout - (time.monotonic() - t0))))
 
 
 # ─── Main Pipeline ──────────────────────────────────────────────────────────
@@ -1031,10 +1330,20 @@ def main():
                         help=f"Gemini model (default: {DEFAULT_MODEL})")
     parser.add_argument("--description", default=None,
                         help="Optional description for transcript frontmatter (~150 chars)")
-    parser.add_argument("--local-speakers", action="store_true",
-                        default=os.environ.get(LOCAL_SPEAKERS_ENV) == "1",
-                        help="AssemblyAI (experimental): request words only (speaker_labels=false) "
-                             f"and write a <transcript>.words.json sidecar; default from {LOCAL_SPEAKERS_ENV}=1")
+    parser.add_argument("--local-speakers", action=argparse.BooleanOptionalAction,
+                        default=local_speakers_default(),
+                        help="AssemblyAI (beta): words only (speaker_labels=false), speakers tracked "
+                             "locally from enrolled voiceprints; falls back to cloud diarization when "
+                             f"local tracking is not set up (default from {LOCAL_SPEAKERS_ENV}=1|0)")
+    parser.add_argument("--roster", default=None,
+                        help="Local speakers: comma-separated attendee names (default: the context "
+                             "file's 'Possible speakers:' list, else everyone enrolled)")
+    parser.add_argument("--channel", choices=["phone", "zoom", "room"], default=None,
+                        help="Local speakers: recording channel (per-channel voiceprints, audit stratum)")
+    parser.add_argument("--track-backend", choices=["nemotron3", "seg3", "auto"], default="nemotron3",
+                        help="Local speakers: boundary model that must be installed (default nemotron3)")
+    parser.add_argument("--track-timeout", type=float, default=3600,
+                        help="Local speakers: maximum wait for local tracking after AssemblyAI finishes, s")
     archive_options = parser.add_mutually_exclusive_group()
     archive_options.add_argument("--archive-dir", type=Path, default=None,
                                  help="Opt in to OGG archival in this directory")
@@ -1045,6 +1354,8 @@ def main():
         parser.error("--aai-poll-timeout must be a positive finite number")
     if args.speakers_expected is not None and args.speakers_expected < 1:
         parser.error("--speakers-expected must be positive")
+    if args.track_timeout <= 0 or not math.isfinite(args.track_timeout):
+        parser.error("--track-timeout must be a positive finite number")
     for context_path in (args.context_file, args.keyterms_file):
         if context_path is not None and not context_path.expanduser().is_file():
             parser.error("The specified context or keyterms file does not exist")
@@ -1063,15 +1374,6 @@ def main():
     # Preserve previous transcripts and source aliases; do this before provider work.
     if output_path.exists() or output_path.is_symlink():
         raise FileExistsError("Transcript destination already exists; choose a new output path.")
-    if args.backend == "assemblyai":
-        sidecar_path = (words_sidecar_path if args.local_speakers else utterances_sidecar_path)(output_path)
-        if sidecar_path.exists() or sidecar_path.is_symlink():
-            kind = "Words" if args.local_speakers else "Utterances"
-            raise FileExistsError(f"{kind} sidecar for this transcript already exists; choose a new output path.")
-    if args.archive_dir is not None:
-        archive_path = archive_destination(audio_path, args.archive_dir)
-        if archive_path == output_path.resolve():
-            raise ValueError("Transcript and archive destinations must be distinct.")
 
     # Load context
     context = None
@@ -1082,8 +1384,31 @@ def main():
         else:
             print(f"Warning: Context file not found: {ctx_path}")
 
+    # Local speaker tracking must be ready before anything is uploaded; otherwise AssemblyAI
+    # diarizes as before and the transcript says why.
+    plan = None
+    if args.local_speakers and args.backend != "assemblyai":
+        print("Note: --local-speakers applies to the AssemblyAI backend only; ignored.")
+        args.local_speakers = False
+    elif args.local_speakers:
+        plan, why = plan_local_tracking(args, audio_path, output_path, context)
+        if plan is None:
+            args.local_speakers = False
+            args.local_fallback = (f"Local speaker tracking was requested but is unavailable ({why}). "
+                                   "AssemblyAI cloud diarization was used instead.")
+            print(f"⚠️  {args.local_fallback}")
     if args.backend == "assemblyai":
-        run_assemblyai_backend(args, audio_path, output_path, context)
+        sidecar_path = (words_sidecar_path if args.local_speakers else utterances_sidecar_path)(output_path)
+        if sidecar_path.exists() or sidecar_path.is_symlink():
+            kind = "Words" if args.local_speakers else "Utterances"
+            raise FileExistsError(f"{kind} sidecar for this transcript already exists; choose a new output path.")
+    if args.archive_dir is not None:
+        archive_path = archive_destination(audio_path, args.archive_dir)
+        if archive_path == output_path.resolve():
+            raise ValueError("Transcript and archive destinations must be distinct.")
+
+    if args.backend == "assemblyai":
+        run_assemblyai_backend(args, audio_path, output_path, context, plan)
         return
 
     # Own all prepared audio and retry chunks from before the first write.

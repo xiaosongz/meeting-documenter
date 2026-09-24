@@ -18,6 +18,9 @@ Usage:
     identify_speakers.py track --audio X.m4a [--roster "Alice Example,Bob Example"]
         [--backend auto|nemotron3|seg3] [--channel phone] [--out X.timeline.json] [--rttm X.rttm]
     identify_speakers.py track-calibrate [--dry-run] [--json out.json|-]
+    identify_speakers.py track-check [--roster "Alice Example,Bob Example"] [--backend nemotron3]
+    identify_speakers.py enroll --name "Canonical Name" --audio X --timeline X.timeline.json
+        [--speaker GUEST_1] [--spans "12.5-20,01:05-01:30"] [--min-turn-s 3]
     identify_speakers.py list [--json]
     identify_speakers.py forget --name "Canonical Name" --yes
     identify_speakers.py audit sample --input X.m4a X.timeline.json [--input …] --out DIR
@@ -522,6 +525,8 @@ def _track(args) -> int:
     info: dict = {}
     tl = vp_track.track(args.audio, roster, store, embedder, backend=args.backend, params=params,
                         channel=args.channel, exclude_meetings=exclude, info=info)
+    if args.channel:
+        tl.meta.setdefault("channel", args.channel)             # the audit's channel stratum
     if args.out:
         Path(args.out).write_text(vp_timeline.to_json(tl) + "\n", encoding="utf-8")
     if args.rttm:
@@ -540,6 +545,57 @@ def _track(args) -> int:
     for k, v in result["speakers_s"].items():
         print(f"  {k:<32} {v:8.1f} s", file=sys.stderr)
     emit(result, args.json)
+    return 0
+
+
+def track_readiness(args) -> dict:
+    """Can `track` name speakers on this machine? Cheap: no torch, no audio, no model load.
+
+    Ready needs the embedder and boundary model installed, enrolled voiceprints for that
+    embedder, the store's own track calibration (`track-calibrate`; the built-in public-data
+    calibration is not trusted for naming people), and, given a roster, at least one enrolled
+    roster member. transcribe_pipeline.py falls back to cloud diarization when not ready.
+    """
+    from voiceprint import embedders
+    from voiceprint import segment as vp_segment
+    from voiceprint import track as vp_track
+
+    def no(status: str, reason: str, **extra) -> dict:
+        return {"ready": False, "status": status, "reason": reason, **extra}
+
+    if args.model not in embedders.available_embedders():
+        return no("no_embedder", f"embedder '{args.model}' or its dependencies are not installed")
+    backend = vp_track.resolve_backend(args.backend)
+    if not vp_segment.available(backend):
+        return no("no_boundary", f"boundary model '{backend}' is not installed")
+    store = vp_store.VoiceprintStore.open(args.store, create=False)
+    model_id = embedders.model_id_for(args.model)
+    enrolled = {s["person"] for s in store.summary() if s["model_id"] == model_id}
+    if not enrolled:
+        return no("no_voiceprints", f"no voiceprints for {args.model} in {store.root}")
+    track_cal = (store.load_calibration(model_id, args.model) or {}).get("track")
+    if not track_cal:
+        return no("no_calibration", "the store has no track calibration; run identify-speakers.sh "
+                                    "track-calibrate after enrolling a few meetings")
+    names = NameResolver()
+    roster = names.split(args.roster)
+    present = [n for n in roster if n in enrolled]
+    if roster and not present:
+        return no("roster_not_enrolled", "nobody on the roster is enrolled", roster_missing=roster)
+    return {"ready": True, "status": "ready", "reason": "", "backend": backend, "model_id": model_id,
+            "calibration": track_cal.get("source"), "enrolled_people": len(enrolled),
+            "roster_enrolled": present, "roster_missing": [n for n in roster if n not in enrolled]}
+
+
+def cmd_track_check(args) -> int:
+    """Always exit 0 and print one JSON object on stdout (the pipeline parses it)."""
+    try:
+        res = track_readiness(args)
+    except vp_config.VaultPathError as e:
+        res = {"ready": False, "status": "store_refused", "reason": str(e)}
+    except Exception as e:  # noqa: BLE001  (a readiness probe never fails the caller)
+        res = {"ready": False, "status": "error", "reason": f"{type(e).__name__}: {e}"}
+    print(json.dumps(res, ensure_ascii=False))
     return 0
 
 
@@ -631,23 +687,101 @@ def format_report(r: dict) -> str:
 
 # ─── enroll ─────────────────────────────────────────────────────────────────
 
+TIMELINE_MIN_TURN_S = 3.0   # enroll only timeline turns at least this long (short turns carry edge errors)
+
+
+def _seconds(ts: str) -> float:
+    parts = [float(x) for x in ts.strip().split(":")]
+    return sum(v * 60 ** i for i, v in enumerate(reversed(parts)))
+
+
+def parse_spans(arg: str | None) -> list[tuple[float, float]]:
+    """"12.5-20,01:05-01:30" → [(12.5, 20.0), (65.0, 90.0)]: seconds, MM:SS or H:MM:SS."""
+    spans = []
+    for part in (arg or "").split(","):
+        if part.strip():
+            a, _, b = part.partition("-")
+            spans.append((_seconds(a), _seconds(b)))
+            if not spans[-1][1] > spans[-1][0]:
+                raise ValueError(f"span {part.strip()!r} does not end after it starts")
+    return spans
+
+
+def timeline_enroll_source(args, names: NameResolver, name: str):
+    """(UtteranceSet, label), or (None, reason): the confirmed Timeline turns of `--speaker`
+    (default: the name itself) that last at least `--min-turn-s`, clipped to `--spans` when
+    given, as one cluster; every other label's turns are crosstalk that clip selection cuts
+    out (± the overlap guard). A named label must be `name` unless --force (like the sidecar
+    speaker_map check); UNCERTAIN turns need --spans the user confirmed by ear; UNKNOWN and
+    OVERLAP are never enrolled."""
+    from voiceprint import timeline as vp_timeline
+
+    tl = vp_timeline.from_json(Path(args.timeline).read_text(encoding="utf-8"))
+    label = args.speaker or name
+    kind, _ = vp_timeline.parse_label(label)
+    try:
+        spans = parse_spans(args.spans)
+    except ValueError as e:
+        return None, f"--spans: {e}"
+    if kind in ("unknown", "overlap"):
+        return None, f"{label} turns cannot be enrolled; confirm the speaker by ear and pass --spans"
+    if kind == "uncertain" and not spans:
+        return None, f"{label} turns need --spans that the user confirmed by ear"
+    if kind == "name" and names.canonical(label) != name and not args.force:
+        return None, f"the timeline labels these turns {label}, not {name}. Resolve the label (or --force)."
+    turns = [t for t in tl.turns if t.speaker == label]
+    if not turns:
+        have = sorted({t.speaker for t in tl.turns})
+        return None, f"no turns labelled {label!r} in the timeline (have {have})"
+    pieces = []
+    for t in turns:
+        for a, b in (spans or [(t.start, t.end)]):
+            a, b = max(a, t.start), min(b, t.end)
+            if b - a >= args.min_turn_s:
+                pieces.append((a, b))
+    if not pieces:
+        return None, (f"no {label} turn of at least {args.min_turn_s:g} s"
+                      + (" inside --spans" if spans else "") + " to enroll")
+    utts = [vp_audio.Utterance(label, int(a * 1000), int(b * 1000)) for a, b in pieces]
+    utts += [vp_audio.Utterance(t.speaker, int(t.start * 1000), int(t.end * 1000))
+             for t in (*tl.turns, *tl.exclusive) if t.speaker != label]
+    utts.sort(key=lambda u: u.start_ms)
+    total = sum(b - a for a, b in pieces)
+    print(f"Timeline: {len(pieces)} {label} turn(s) ≥ {args.min_turn_s:g} s, {total:.1f} s before VAD",
+          file=sys.stderr)
+    return vp_audio.UtteranceSet(utts, source="timeline", path=str(args.timeline)), label
+
+
 def cmd_enroll(args) -> int:
+    if (args.timeline is None) == (args.utterances is None):
+        print("❌ pass exactly one of --utterances (with --cluster) or --timeline", file=sys.stderr)
+        return 2
     names = NameResolver()
     name = names.canonical(args.name)
     if not names.known(name) and not args.allow_unregistered:
         print(f"❌ '{args.name}' is not in KNOWN_SPEAKERS.yaml — add it first or pass --allow-unregistered",
               file=sys.stderr)
         return 2
-    uset = vp_audio.load_utterances(args.utterances)
-    if args.cluster not in uset.speakers:
-        print(f"❌ cluster {args.cluster!r} not in utterances (have {uset.speakers})", file=sys.stderr)
-        return 2
-    labels = parse_labels(None, uset, names) or {}
-    if labels.get(args.cluster) and labels[args.cluster] != name and not args.force:
-        print(f"❌ sidecar speaker_map says {args.cluster}={labels[args.cluster]}, not {name}. "
-              "Resolve the label (or --force).", file=sys.stderr)
-        return 2
-    mk = args.meeting_key or vp_audio.meeting_key_from(args.utterances, args.audio)
+    if args.timeline:
+        uset, cluster = timeline_enroll_source(args, names, name)
+        if uset is None:
+            print(f"❌ {cluster}", file=sys.stderr)
+            return 2
+    else:
+        cluster = args.cluster
+        if not cluster:
+            print("❌ --cluster is required with --utterances", file=sys.stderr)
+            return 2
+        uset = vp_audio.load_utterances(args.utterances)
+        if cluster not in uset.speakers:
+            print(f"❌ cluster {cluster!r} not in utterances (have {uset.speakers})", file=sys.stderr)
+            return 2
+        labels = parse_labels(None, uset, names) or {}
+        if labels.get(cluster) and labels[cluster] != name and not args.force:
+            print(f"❌ sidecar speaker_map says {cluster}={labels[cluster]}, not {name}. "
+                  "Resolve the label (or --force).", file=sys.stderr)
+            return 2
+    mk = args.meeting_key or vp_audio.meeting_key_from(args.timeline or args.utterances, args.audio)
     if not mk:
         print("❌ cannot derive meeting key from file names; pass --meeting-key YYYY-MM-DD-HHMM", file=sys.stderr)
         return 2
@@ -673,12 +807,12 @@ def cmd_enroll(args) -> int:
     sig = clip_signature(clip_cfg)
     print(f"Clip config: {json.dumps({k: v for k, v in clip_cfg.items() if k != 'source'})} sig {sig}")
     vad_info: dict = {}
-    per = vp_audio.embed_meeting(embedder, args.audio, uset, params, speakers=[args.cluster], info=vad_info)
+    per = vp_audio.embed_meeting(embedder, args.audio, uset, params, speakers=[cluster], info=vad_info)
     print(_vad_note(vad_info))
-    clips, embs = per[args.cluster]
+    clips, embs = per[cluster]
     net = sum(c.net_dur for c in clips)
     if not clips:
-        print(f"❌ no clean clips for cluster {args.cluster} (turn lengths / overlap / VAD)", file=sys.stderr)
+        print(f"❌ no clean clips for cluster {cluster} (turn lengths / overlap / VAD)", file=sys.stderr)
         return 1
 
     # Self-check against what's already enrolled (other meetings only)
@@ -686,7 +820,7 @@ def cmd_enroll(args) -> int:
     check = {}
     if prior:
         enr = vp_scoring.build_enrollment(prior)
-        cv = vp_scoring.cluster_embedding(args.cluster, embs, [c.net_dur for c in clips], min_net_s=0)
+        cv = vp_scoring.cluster_embedding(cluster, embs, [c.net_dur for c in clips], min_net_s=0)
         sims = {p: round(float(m.reference(args.channel) @ cv.vec), 3) for p, m in enr.items()}
         best = max(sims, key=sims.get)
         check = {"cosine_vs_enrolled": sims, "best": best}
@@ -713,14 +847,14 @@ def cmd_enroll(args) -> int:
                 print(f"⚠️⚠️  --force: {msg}", file=sys.stderr)
 
     rows = [vp_store.Exemplar(person=name, embedding=e, channel=args.channel, language=args.language,
-                              meeting_key=mk, cluster=args.cluster, start_ms=c.start_ms, end_ms=c.end_ms,
+                              meeting_key=mk, cluster=cluster, start_ms=c.start_ms, end_ms=c.end_ms,
                               net_dur=c.net_dur, source=args.source, clip_sig=sig)
             for c, e in zip(clips, embs)]
     if args.dry_run:
         print(f"(dry run) would enroll {len(rows)} clips / {net:.1f} s for {name} from {mk}")
         return 0
     res = store.add_exemplars(embedder.model_id, rows, cap=args.cap)
-    print(f"✅ enrolled {name}: {res['added']} clips, {net:.1f} s net from {mk} cluster {args.cluster} "
+    print(f"✅ enrolled {name}: {res['added']} clips, {net:.1f} s net from {mk} cluster {cluster} "
           f"[{args.channel}, {args.source}] model {embedder.model_id}"
           + (f" (replaced {res['replaced']})" if res["replaced"] else "")
           + (f" (trimmed to cap: {res['trimmed']})" if res["trimmed"] else ""))
@@ -922,9 +1056,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     caps = vp_config.DEVICE_CAP_S
 
-    def common_audio(p):
+    def common_audio(p, utterances_required=True):
         p.add_argument("--audio", required=True, type=Path)
-        p.add_argument("--utterances", required=True, type=Path)
+        p.add_argument("--utterances", required=utterances_required, type=Path)
         p.add_argument("--model", default=DEFAULT_MODEL)
         p.add_argument("--device", choices=["auto", "cpu", "mps"], default="auto",
                        help="auto = MPS if available (torch models; CPU-parity self-tested), else CPU")
@@ -963,10 +1097,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also use exemplars enrolled from this same meeting (default: excluded)")
     p.set_defaults(func=cmd_identify)
 
-    p = sub.add_parser("enroll", help="enroll a verified cluster as a person")
-    common_audio(p)
+    p = sub.add_parser("enroll", help="enroll a verified cluster, or confirmed timeline turns, as a person")
+    common_audio(p, utterances_required=False)
+    p.add_argument("--timeline", type=Path,
+                   help="enroll from a speaker Timeline JSON (from track) instead of --utterances/--cluster")
     p.add_argument("--name", required=True)
-    p.add_argument("--cluster", required=True)
+    p.add_argument("--cluster", help="utterances cluster to enroll (with --utterances)")
+    p.add_argument("--speaker", help="timeline label to enroll, e.g. GUEST_1 (default: --name)")
+    p.add_argument("--spans", help="only these user-confirmed spans, e.g. '12.5-20,01:05-01:30' "
+                                   "(required for an UNCERTAIN label)")
+    p.add_argument("--min-turn-s", type=float, default=TIMELINE_MIN_TURN_S,
+                   help=f"timeline turns shorter than this are skipped (default {TIMELINE_MIN_TURN_S:g})")
     p.add_argument("--channel", choices=vp_config.CHANNELS, default="unknown")
     p.add_argument("--language", help="zh | en | mixed")
     p.add_argument("--source", choices=vp_config.SOURCES, default="confirmed_meeting")
@@ -1022,6 +1163,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", help="write a JSON summary to path, or '-' for stdout")
     p.set_defaults(func=cmd_track)
 
+    p = sub.add_parser("track-check", help="can `track` name speakers here? (JSON on stdout; cheap)")
+    p.add_argument("--roster", help="comma-separated attendee names")
+    p.add_argument("--backend", choices=["auto", "nemotron3", "seg3"], default="nemotron3",
+                   help="boundary layer that must be installed (default nemotron3: the seg3 fallback "
+                        "names far more strangers)")
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.set_defaults(func=cmd_track_check)
+
     p = sub.add_parser("track-calibrate", help="refit the tracker's score calibration on the store (LOMO)")
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--top-n", type=int, default=100)
@@ -1046,6 +1195,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if DEPS_ERROR:
+        if args.cmd == "track-check":
+            print(json.dumps({"ready": False, "status": "no_deps",
+                              "reason": f"voiceprint dependencies not installed ({DEPS_ERROR})"}))
+            return 0
         if args.cmd in ("identify", "track"):
             return noop("no_deps", f"voiceprint dependencies not installed ({DEPS_ERROR}); "
                         "see README § Voiceprint speaker ID", args.json)

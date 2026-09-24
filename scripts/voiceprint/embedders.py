@@ -149,6 +149,19 @@ def available_embedders() -> list[str]:
     return out
 
 
+def model_id_for(name: str) -> str:
+    """The `model_id` an embedder built from the pinned files reports, without loading it:
+    weights are sha256-verified against the pin at load, so the id follows from the spec.
+    Lets cheap readiness checks find the store's exemplars and calibration."""
+    if name in TORCH_SPECS:
+        s = TORCH_SPECS[name]
+        return f"redimnet2-{s.model_size}-{s.dataset}-{s.train_type}@{REDIMNET2_SHA[:12]}+w{s.sha256[:12]}"
+    if name in ONNX_SPECS:
+        s = ONNX_SPECS[name]
+        return f"{s.tag}@sha256:{s.sha256[:12]}"
+    raise ValueError(f"unknown embedder {name!r}; known: {ALL_NAMES}")
+
+
 def get_embedder(name: str = "redimnet2", device: str = "cpu") -> Embedder:
     """Build an embedder. device: 'cpu' (default, deterministic) | 'mps' (redimnet2)
     | 'coreml' (sherpa backends). Raises FileNotFoundError if models are missing."""
@@ -229,7 +242,7 @@ class _ReDimNet2Embedder:
         if not (spec.code_dir / "redimnet2" / "__init__.py").is_file():
             raise FileNotFoundError(
                 f"vendored code missing at {spec.code_dir}; run fetch_models.py")
-        digest = _verify(spec.weight_path, spec.sha256)
+        _verify(spec.weight_path, spec.sha256)
 
         torch.set_num_threads(_num_threads())
         code = str(spec.code_dir)
@@ -250,8 +263,7 @@ class _ReDimNet2Embedder:
         self._since_release = 0
         self.name = spec.name
         self.dim = int(ckpt["model_config"]["embed_dim"])
-        self.model_id = (f"redimnet2-{spec.model_size}-{spec.dataset}-{spec.train_type}"
-                         f"@{REDIMNET2_SHA[:12]}+w{digest[:12]}")
+        self.model_id = model_id_for(spec.name)      # _verify pinned the weights above
 
     def _forward(self, batch: np.ndarray) -> np.ndarray:
         t = self._torch.from_numpy(batch).to(self._device)
@@ -309,7 +321,7 @@ class _SherpaEmbedder:
         provider = {"cpu": "cpu", "coreml": "coreml"}.get(device)
         if provider is None:
             raise ValueError(f"{spec.name} supports device cpu|coreml, got {device!r}")
-        digest = _verify(spec.path, spec.sha256)
+        _verify(spec.path, spec.sha256)
         cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
             model=str(spec.path), num_threads=_num_threads(), debug=False, provider=provider)
         if not cfg.validate():
@@ -317,7 +329,7 @@ class _SherpaEmbedder:
         self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
         self.name = spec.name
         self.dim = int(self._ex.dim)
-        self.model_id = f"{spec.tag}@sha256:{digest[:12]}"
+        self.model_id = model_id_for(spec.name)      # _verify pinned the weights above
 
     def embed(self, wave: np.ndarray) -> np.ndarray:
         w = _check_wave(wave)
