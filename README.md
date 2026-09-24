@@ -162,6 +162,17 @@ The default embedder is ReDimNet2 (torch; CPU, or Apple-silicon MPS after a CPU 
 
 `calibrate` needs no audio: it rebuilds enrollment leave-one-meeting-out from the stored vectors, sets the open-set threshold τ at the 99th percentile of scores for voices that are not enrolled (about 1% false accepts on your data), τ_low at the 95th, and the swap-margin/gap rules from the 5th percentile of true-speaker trials. It refuses to write anything with fewer than 50 such scores, prints a nested (held-out-meeting) error estimate, and records the clip configuration so later runs reproduce the same clips. Details: [BACKENDS.md § Voiceprint check](references/BACKENDS.md#voiceprint-check-step-25a-optional-beta).
 
+**Listening audit.** To measure accuracy on your own meetings without annotating whole timelines, `audit sample` draws about 300 short windows from speaker timelines (stratified by turn duration, system confidence and channel; short turns, UNCERTAIN regions and switches between a close pair are oversampled), renders each with ±2 s of context and a soft tone before and after the span to judge, and writes an offline answering page. About an hour of listening with the keyboard gives per-stratum accuracy with 95 % confidence intervals:
+
+```bash
+./scripts/identify-speakers.sh audit sample --input team-sync.m4a team-sync.timeline.json \
+  --channel zoom --out ~/private/speaker-audit        # then open ~/private/speaker-audit/index.html
+./scripts/identify-speakers.sh audit score --manifest ~/private/speaker-audit/manifest.json \
+  --answers ~/Downloads/answers.json                  # → report.md / report.json next to the manifest
+```
+
+The clips, page and reports contain your recordings and names, so the output directory gets the same guard as the voiceprint store (never inside the notes vault or this clone).
+
 **Limits.** Validated on the maintainer's private meetings; a public benchmark is pending (see the [roadmap](CONTRIBUTING.md#roadmap)). Accuracy drops with short turns (under about 8 s of net speech per cluster), phone or heavily compressed audio, overlapping speech, similar voices, and people with little enrolled speech. The utterances sidecar contains meeting text. Voiceprints from different models are not comparable; changing models means re-enrolling.
 
 ## Privacy and consent for voiceprints
@@ -183,7 +194,7 @@ scripts/compress-audio.sh        Named OGG archive and verification
 scripts/split-audio.sh           Silence-aware splitting
 scripts/cleanup-source-audio.sh  Original recording backup
 scripts/identify-speakers.sh     Optional voiceprint CLI wrapper (guarded config loading)
-scripts/identify_speakers.py     Voiceprint identify / enroll / calibrate / list / forget
+scripts/identify_speakers.py     Voiceprint identify / enroll / calibrate / list / forget / audit
 scripts/voiceprint/              Embedders, clip selection, scoring, store, calibration, tests
 scripts/dev/check_pii.py         PII/private-file guard (CI and pre-commit hook)
 .githooks/pre-commit             Local hook running the PII guard on staged changes
