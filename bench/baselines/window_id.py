@@ -287,19 +287,15 @@ def to_segments(test: dict, labels: list[str], path: np.ndarray, wp: WinParams,
     jl = np.maximum(j - 1, 0)
     j = np.where(np.abs(t - centers[jl]) <= np.abs(t - centers[j]), jl, j)
     near = np.abs(t - centers[j]) <= fill_s
-    lab = np.array(labels + [UNK], dtype=object)[path[j]]
-    segs: list[Seg] = []
-    run = None                                   # [first frame, last frame, label]
-    for f, l, ok in zip(idx[near], lab[near], near[near]):
-        if run and run[2] == l and f == run[1] + 1:
-            run[1] = f
-            continue
-        if run:
-            segs.append(Seg(run[0] * hop, (run[1] + 1) * hop, run[2]))
-        run = [f, f, l]
-    if run:
-        segs.append(Seg(run[0] * hop, (run[1] + 1) * hop, run[2]))
-    return segs
+    f, st = idx[near], path[j][near]
+    if not len(f):
+        return []
+    # a new run starts where the frame index jumps or the state changes
+    brk = np.flatnonzero((np.diff(f) != 1) | (np.diff(st) != 0)) + 1
+    starts = np.concatenate([[0], brk])
+    ends = np.concatenate([brk, [len(f)]]) - 1
+    names = labels + [UNK]
+    return [Seg(f[a] * hop, (f[b] + 1) * hop, names[st[a]]) for a, b in zip(starts, ends)]
 
 
 @dataclass
