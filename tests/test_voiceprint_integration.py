@@ -216,7 +216,10 @@ class LocalSpeakersTests(unittest.TestCase):
     def test_explicit_roster_and_meeting_key_reach_the_tracker(self):
         case = self.case()
         case.output = case.directory / "output" / "2026-01-02-0930 Sync-Transcript.md"
+        self.stub({**READY, "roster_missing": ["Carol Example"]}, timeline=synthetic_timeline(self.TURNS))
         case.run_main("--local-speakers", "--roster", "Alice Example, Bob Example")
+        self.assertIn("**Roster:** Alice Example, Bob Example (no voiceprints: Carol Example)",
+                      case.output.read_text())
         track = self.calls()[1]
         self.assertEqual(track[track.index("--roster") + 1], "Alice Example,Bob Example")
         self.assertEqual(track[track.index("--meeting-key") + 1], "2026-01-02-0930")

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # identify-speakers.sh — Load the trusted config, then run the voiceprint CLI
-# Usage: identify-speakers.sh identify|enroll|cohort-add|calibrate|list|forget [options]
+# Usage: identify-speakers.sh track|track-check|track-calibrate|enroll|list|forget|audit|identify|calibrate|cohort-add [options]
 #
 # Loads the same guarded configuration as transcribe.sh, so VAULT_PATH, MEETING_NOTES_DIR
 # and VOICEPRINT_* reach the "never store biometrics inside notes" guard. Installs nothing:

@@ -717,7 +717,9 @@ def _tracking_header(tracking: dict, utterances: list) -> tuple[str, str, str]:
              f"`{tracking['model_id']}` voiceprints · calibration `{tracking['calibration']}` · "
              f"timeline `{tracking['timeline']}`\n")
     if tracking.get("roster"):
-        extra += f"**Roster:** {', '.join(tracking['roster'])}\n"
+        missing = tracking.get("roster_missing") or []
+        extra += (f"**Roster:** {', '.join(tracking['roster'])}"
+                  + (f" (no voiceprints: {', '.join(missing)})" if missing else "") + "\n")
     count_text = f"{len(utterances)} turns · {speakers or 'no speech attributed'}"
     note = """> [!note] Speakers were attributed locally from enrolled voiceprints (who speaks when).
 > AssemblyAI ran without diarization, so no cloud voice embeddings were created.
@@ -1081,6 +1083,7 @@ def _tracking_summary(plan: LocalTrackingPlan, tl) -> dict:
             "model_id": tl.meta.get("model_id") or plan.check.get("model_id") or "unknown",
             "calibration": calibration.get("source") or plan.check.get("calibration") or "unknown",
             "timeline": plan.timeline_path.name, "roster": plan.roster,
+            "roster_missing": plan.check.get("roster_missing") or [],
             "speakers": [(vp_words.display_label(k), v) for k, v in ranked]}
 
 
@@ -1397,6 +1400,9 @@ def main():
             args.local_fallback = (f"Local speaker tracking was requested but is unavailable ({why}). "
                                    "AssemblyAI cloud diarization was used instead.")
             print(f"⚠️  {args.local_fallback}")
+        elif plan.check.get("roster_missing"):
+            print(f"   Roster without voiceprints (their speech will show as Guest n): "
+                  f"{', '.join(plan.check['roster_missing'])}")
     if args.backend == "assemblyai":
         sidecar_path = (words_sidecar_path if args.local_speakers else utterances_sidecar_path)(output_path)
         if sidecar_path.exists() or sidecar_path.is_symlink():
