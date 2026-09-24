@@ -80,6 +80,24 @@ System labels are enrolled IDs or abstentions: `GUEST_*`, `UNKNOWN`, `UNCERTAIN(
 2 × collar. Reports use collars 0 and 0.25. Sanity checks: reference vs reference gives
 IER 0, and a label derangement gives IER > 0 (`--sanity reference|shuffled`).
 
+## Enrollment QC for AMI (`bench/datasets/enroll_qc.py`, opt-in `--enroll-qc`)
+
+B0's AMI dev IER (55 %) was far above test (37 %). The cause is data, not the method:
+
+- **IB4001 / IB4002 labels are permuted between the two meetings.** The far-field centroid
+  of each label is closest (cosine 0.92–0.98) to a *different* label in the partner
+  meeting, so cross-session enrollment names the wrong person (70–74 % wrong names).
+- **Some headset mixes lack a speaker** (dead or missing headset channel): IB4010/IB4011,
+  IS1008b/c, TS3004b/c, ES2011c, and one test source (EN2002c/MEE071). For the same
+  speaker and times, the headset-mix centroid and the far-field centroid sit at cosine
+  0.11–0.70 instead of 0.78–0.98, so the "enrollment clips" are other people's crosstalk.
+
+`enroll_qc` measures both from B0's cache and writes `bench/datasets/qc/ami.json`: 19
+(meeting, speaker) sources below cosine 0.75 are dropped, and so are the IB4001+IB4002
+series (permuted labels) and IB4010+IB4011 (a meeting left with no enrollable
+participant). `--enroll-qc` applies it in B0, the tracker and `bench.run` (use it on both
+sides). With it, retuned B0 scores 33.05 % on AMI dev and 38.70 % on test.
+
 ## Baseline B0 (`bench/baselines/window_id.py`)
 
 Silero VAD → 1.5 s windows at a 0.5 s hop (≥ 50 % speech) → ReDimNet2 → cosine against
@@ -117,3 +135,38 @@ reference speech time (at 98 % precision), and a single label per frame cannot c
 overlap. Once speech is labelled, 96 % of enrolled speech gets the right name. The
 open-set false-name rate (22–35 %) is the other weakness: θ is not calibrated per
 dataset.
+
+## Tracker (architecture A) and baseline B1 (`bench/systems/tracker.py`)
+
+`scripts/voiceprint/track.py` is the system under test; `bench/baselines/ahc_id.py` is B1,
+"diarize then identify": the same boundary layer, units, embeddings, enrollment, cohort and
+calibration, but AHC clustering of the unit embeddings and one Hungarian decision per
+cluster. Both read B0's enrollment and cohort caches, so all three systems see the same
+enrollment.
+
+    python -m bench.systems.tracker prepare   --dataset ami --split dev --enroll-qc   # units + embeddings (MPS)
+    python -m bench.systems.tracker calibrate --dataset ami --split dev --enroll-qc --out cal.json
+    python -m bench.systems.tracker tune      --dataset ami --split dev --enroll-qc --cal cal.json --grid grid.json --out t.json
+    python -m bench.systems.tracker run       --dataset ami --split test --enroll-qc --cal cal.json --params p.json --out <dir>
+    python -m bench.systems.tracker logo      --dataset aishell4 --grid grid.json --out <dir>   # no dev split
+
+`--boundary-cache DIR` points at cached boundary activations (`tools/eval_boundary.py`
+format); missing ones are computed. AMI: calibration and parameters from AMI dev (with
+enrollment QC). AISHELL-4 has no dev split: `logo` calibrates and picks the grid point on
+four session groups and decodes the fifth, for each group in turn.
+
+### Results (2026-09-24; nemotron3 boundary, ReDimNet2, collar 0)
+
+| Set | System | IER % | false-name % (LOO) | abstain % | ≥ 3 s turns correct % | < 1 s correct % |
+|---|---|---|---|---|---|---|
+| AMI test | B0 (published protocol) | 37.26 | 22.61 | 0.96 | 69.98 | 8.00 |
+| AMI test | B1 | 23.32 | 2.39 | 4.52 | 85.39 | 55.70 |
+| AMI test | **A** | **20.87** | 2.98 | 0.86 | 86.26 | 67.24 |
+| AMI test | A, seg3 boundary (fallback) | 27.82 | 24.24 | 1.53 | 84.39 | 22.63 |
+| AISHELL-4 eval | B0 | 25.33 | 34.89 | 1.03 | 78.34 | 7.63 |
+| AISHELL-4 eval | B1 (leave-one-group-out) | 20.50 | 2.51 | 11.14 | 87.84 | 31.39 |
+| AISHELL-4 eval | **A** (leave-one-group-out) | **12.64** | 5.75 | 3.23 | 95.40 | 39.76 |
+
+A's remaining AMI errors are mostly missed speech at turn edges (12.9 % of enrolled speech;
+the boundary layer's tight edges vs the `only_words` reference). Of the ≥ 3 s speech that
+A labels, 97.9 % (AMI) and 96.4 % (AISHELL-4) gets the right name.

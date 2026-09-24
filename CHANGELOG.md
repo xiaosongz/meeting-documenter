@@ -5,7 +5,14 @@
 ### Added
 
 - **Speaker timeline and word attribution** (`scripts/voiceprint/timeline.py`, `scripts/voiceprint/words.py`, standard library only): turns plus an exclusive one-speaker-at-a-time view with RTTM/JSON I/O, and max-intersection attribution of ASR words to that view (straddle, gap, UNCERTAIN and overlap flags; turns rebuilt at every speaker change). Groundwork for local known-speaker tracking.
+- **Known-speaker tracking** (`scripts/voiceprint/track.py`, CLI `identify_speakers.py track` and `track-calibrate`): who speaks when, from enrolled voiceprints, locally. Boundary tracks (Nemotron 3 global slots, or seg-3.0 chunk speakers linked across chunks) → units of clean speech → ReDimNet2 → owner-aware AS-norm → duration-aware calibrated LLR → per-track HMM over roster ∪ UNKNOWN → exclusive assignment, track-level identities, `UNCERTAIN(A|B)`, `GUEST_n` → a `Timeline`. On the public benchmark (cross-session enrollment) IER is 20.9 % on AMI test and 12.6 % on AISHELL-4 eval, vs 37.3 % / 25.3 % for the window baseline B0 and 23.3 % / 20.5 % for diarize-then-identify B1.
+- **Benchmark:** tracker driver (`bench/systems/tracker.py`: prepare, calibrate, tune, run, leave-one-group-out), baseline B1 (`bench/baselines/ahc_id.py`), and AMI enrollment QC (`bench/datasets/enroll_qc.py`, `--enroll-qc`), which explains B0's dev-vs-test gap (permuted IB4001/IB4002 labels, missing headset channels).
+- `scripts/voiceprint/footprint.py` (physical footprint incl. MPS buffers, and a guard) and `tools/perf_embed.py`.
 - **Experimental words-only AssemblyAI mode** (`--local-speakers` or `MEETING_DOCUMENTER_LOCAL_SPEAKERS=1`): requests `speaker_labels=false`, so no cloud speaker embeddings are created, and writes `<transcript stem>.words.json` (schema 1: text, millisecond timing, confidence; no speakers). The default path is unchanged.
+
+### Fixed
+
+- **MPS memory in the shared embedder.** ReDimNet2 on MPS kept per-shape buffers (74–85 GB physical footprint while RSS showed 3–8 GB). Equal-length batches are capped at 48 s of audio, the MPS cache is released every 48 s of audio, and the MPS watermarks default to 0.15/0.1: 30 min of 279 distinct clip lengths now peaks at 4.3 GB.
 
 ## 0.8.0-beta.1
 
