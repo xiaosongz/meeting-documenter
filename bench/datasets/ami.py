@@ -63,6 +63,23 @@ def series_of(meeting: str) -> str:
     return m.group(1) if m else meeting
 
 
+def assign_series(speakers: dict[str, list[str]]) -> dict[str, str]:
+    """Series per meeting. Lettered meetings use `series_of`. Unlettered ones (the dev
+    split's IB40xx) are grouped with the other unlettered meetings that have exactly the
+    same participants (IB4001 + IB4002 → "IB4001+IB4002"); a unique set stays alone."""
+    groups: dict[frozenset, list[str]] = defaultdict(list)
+    out = {}
+    for m in sorted(speakers):
+        s = series_of(m)
+        if s != m:
+            out[m] = s
+        else:
+            groups[frozenset(speakers[m])].append(m)
+    for ms in groups.values():
+        out.update({m: "+".join(ms) for m in ms})
+    return out
+
+
 def fetch_setup(log=stderr_log) -> Path:
     d = setup_dir()
     if (d / "lists" / "test.meetings.txt").is_file():
@@ -129,15 +146,17 @@ def prepare(splits=("test", "dev"), streams=("sdm", "headset"), workers: int = 4
 
     entries = {}
     for split, ms in split_meetings.items():
+        speakers = {m: sorted({s.speaker for s in read_rttm(rttm_path(m, split))[m]}) for m in ms}
+        series = assign_series(speakers)
         for m in ms:
             uem = read_uem(uem_path(m, split)).get(m, [])
             entries[m] = {
                 "split": split,
-                "series": series_of(m),
+                "series": series[m],
                 "rttm": str(rttm_path(m, split).relative_to(root())),
                 "uem": str(uem_path(m, split).relative_to(root())),
                 "duration_s": round(sum(b - a for a, b in uem), 3),
-                "speakers": sorted({s.speaker for s in read_rttm(rttm_path(m, split))[m]}),
+                "speakers": speakers[m],
                 "audio": {st: {"path": str(audio_path(m, st).relative_to(root())),
                                "size": fetched[audio_path(m, st).name].size,
                                "sha256": fetched[audio_path(m, st).name].sha256}

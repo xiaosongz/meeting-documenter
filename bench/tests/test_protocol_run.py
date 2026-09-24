@@ -4,7 +4,7 @@ import json
 import pytest
 
 from bench import protocol as P
-from bench.datasets.ami import series_of
+from bench.datasets.ami import assign_series, series_of
 from bench.datasets.aishell4 import group_of
 from bench.rttm import Seg, format_rttm
 
@@ -40,6 +40,9 @@ def bench_env(tmp_path, monkeypatch):
 def test_series_and_group_names():
     assert series_of("ES2004c") == "ES2004" and series_of("IB4001") == "IB4001"
     assert group_of("L_R003S02C02") == "L_R003"
+    spk = {"ES2004a": ["A", "B"], "IB4001": ["C", "D"], "IB4002": ["D", "C"], "IB4003": ["C", "E"]}
+    assert assign_series(spk) == {"ES2004a": "ES2004", "IB4001": "IB4001+IB4002",
+                                  "IB4002": "IB4001+IB4002", "IB4003": "IB4003"}
     with pytest.raises(ValueError):
         group_of("nope")
 
