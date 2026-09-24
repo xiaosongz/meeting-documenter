@@ -9,3 +9,6 @@ torch
 torchaudio
 sherpa-onnx
 onnxruntime   # boundary layer (pyannote segmentation-3.0 ONNX)
+# Optional nemotron3 boundary backend (not installed by default): a transformers build that
+# includes Nemotron 3 Diarization (after 5.17.0; git main as of 2026-09-24), then
+# python scripts/voiceprint/fetch_models.py nemotron3

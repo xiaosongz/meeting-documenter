@@ -3,6 +3,7 @@
 
     python scripts/voiceprint/fetch_models.py            # all backends
     python scripts/voiceprint/fetch_models.py redimnet2 eres2netv2
+    python scripts/voiceprint/fetch_models.py nemotron3      # optional boundary backend
 
 Pins (commit SHA, sha256) live in embedders.py. Existing files whose sha256
 matches are skipped; downloads go to *.part and are renamed only after the
@@ -21,10 +22,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from voiceprint.embedders import (  # noqa: E402
     ALL_NAMES, ONNX_SPECS, REDIMNET2_REPO, REDIMNET2_SHA, TORCH_SPECS, model_dir, sha256_file,
 )
+from voiceprint import segment_nemotron  # noqa: E402  (optional boundary backend; pins live there)
 from voiceprint.segment import SEG3  # noqa: E402  (boundary layer; pin lives in segment.py)
 from voiceprint.vad import SILERO_V5  # noqa: E402  (speech VAD for clip gating; pin lives in vad.py)
 
 FETCH_NAMES = ALL_NAMES + [SILERO_V5.name, SEG3.name]
+OPTIONAL_NAMES = [segment_nemotron.NAME]   # fetched only when named (≈400 MB)
 
 # Inference-only subset of the upstream repo (training code + images skipped).
 _VENDOR_KEEP = ("redimnet2/", "LICENSE", "README.md", "hubconf.py", "requirements.txt")
@@ -107,8 +110,11 @@ def fetch(names: list[str]) -> None:
             _download(SILERO_V5.url, SILERO_V5.path, SILERO_V5.sha256)
         elif n == SEG3.name:
             _fetch_archive_member(SEG3)
+        elif n == segment_nemotron.NAME:
+            for f, sha in segment_nemotron.FILES.items():
+                _download(segment_nemotron.url(f), segment_nemotron.local_dir() / f, sha)
         else:
-            raise SystemExit(f"unknown model {n!r}; known: {FETCH_NAMES}")
+            raise SystemExit(f"unknown model {n!r}; known: {FETCH_NAMES + OPTIONAL_NAMES}")
 
 
 if __name__ == "__main__":
