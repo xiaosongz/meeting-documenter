@@ -8,7 +8,7 @@ Rules (always on):
     email      e-mail addresses, except reserved example domains (example.com/.org/.net,
                *.example, *.invalid, *.test, localhost).
     file       forbidden files: voiceprint stores (*.sqlite*), calibration.json,
-               *.utterances.json sidecars, embeddings (*.npy/*.npz), model weights
+               *.utterances.json / *.words.json sidecars, embeddings (*.npy/*.npz), model weights
                (*.pt/*.onnx), audio, .env files and the private registries.
 Rule (local only, when a registry is available):
     roster     any canonical_name / alias / email from the private
@@ -46,7 +46,7 @@ ALLOWED_EMAIL_DOMAINS = ("example.com", "example.org", "example.net", "localhost
 ALLOWED_EMAIL_TLDS = (".example", ".invalid", ".test", ".localhost")
 
 FORBIDDEN_FILES = (
-    "*.sqlite", "*.sqlite3", "*.sqlite-journal", "*.sqlite-wal", "calibration.json", "*.utterances.json",
+    "*.sqlite", "*.sqlite3", "*.sqlite-journal", "*.sqlite-wal", "calibration.json", "*.utterances.json", "*.words.json",
     "*.npy", "*.npz", "*.pt", "*.pth", "*.onnx", "*.ckpt", "*.safetensors",
     "*.m4a", "*.mp3", "*.wav", "*.ogg", "*.oga", "*.opus", "*.flac", "*.aac", "*.aiff", "*.aif",
     "*.webm", "*.wma", "*.caf",

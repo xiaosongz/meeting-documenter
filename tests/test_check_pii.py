@@ -56,7 +56,7 @@ class CheckPiiTests(unittest.TestCase):
         self.assertEqual(run("--no-roster", ok)[0], 0)
 
     def test_forbidden_files(self):
-        for name in ("voiceprints.sqlite", "calibration.json", "x Meeting-Transcript.utterances.json",
+        for name in ("voiceprints.sqlite", "calibration.json", "x Meeting-Transcript.utterances.json", "x Meeting-Transcript.words.json",
                      "clip.wav", "talk.m4a", "emb.npy", ".env", "references/KNOWN_SPEAKERS.yaml"):
             with self.subTest(name=name):
                 self.assertTrue(pii.check_name(name))

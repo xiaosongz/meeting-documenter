@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Speaker timeline and word attribution** (`scripts/voiceprint/timeline.py`, `scripts/voiceprint/words.py`, standard library only): turns plus an exclusive one-speaker-at-a-time view with RTTM/JSON I/O, and max-intersection attribution of ASR words to that view (straddle, gap, UNCERTAIN and overlap flags; turns rebuilt at every speaker change). Groundwork for local known-speaker tracking.
+- **Experimental words-only AssemblyAI mode** (`--local-speakers` or `MEETING_DOCUMENTER_LOCAL_SPEAKERS=1`): requests `speaker_labels=false`, so no cloud speaker embeddings are created, and writes `<transcript stem>.words.json` (schema 1: text, millisecond timing, confidence; no speakers). The default path is unchanged.
+
 ## 0.8.0-beta.1
 
 Public beta of optional, advisory voiceprint speaker identification.

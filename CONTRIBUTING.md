@@ -12,7 +12,7 @@ Thanks for helping. This repository is **public-first**: it is the upstream for 
 ## Test data policy
 
 - Use **synthetic or openly licensed** data only: generated tones, synthetic embeddings, text-to-speech from the operating system, or public corpora whose licence allows redistribution.
-- Never commit real recordings, transcripts, utterances sidecars, voiceprint stores (`*.sqlite`), `calibration.json`, embeddings, model weights, or registries with real people.
+- Never commit real recordings, transcripts, utterances or words sidecars, voiceprint stores (`*.sqlite`), `calibration.json`, embeddings, model weights, or registries with real people.
 - Use placeholder people (`Alice Example`, `Bob Example`, `Speaker A`), meetings (`2026-01-01-1000 Example Meeting`), domains (`example.com`, `.invalid`), and paths (`~/...`, `/path/to/...`).
 - Mock provider calls. Live API tests need authorised test material, cost money, and are reported separately from offline results.
 - Tests that need optional heavy dependencies (torch, sherpa-onnx, model files) must skip cleanly when they are missing; CI installs none of them and downloads no models.
@@ -28,7 +28,7 @@ Run everything locally before opening a pull request:
 
 ## PII guard and pre-commit hook
 
-`scripts/dev/check_pii.py` fails on absolute home or mounted-volume paths, e-mail addresses outside reserved example domains, and forbidden files (voiceprint databases, `calibration.json`, `*.utterances.json`, embeddings, model weights, audio, `.env`, private registries). CI runs it on every push and pull request.
+`scripts/dev/check_pii.py` fails on absolute home or mounted-volume paths, e-mail addresses outside reserved example domains, and forbidden files (voiceprint databases, `calibration.json`, `*.utterances.json`, `*.words.json`, embeddings, model weights, audio, `.env`, private registries). CI runs it on every push and pull request.
 
 Locally, when your private `references/KNOWN_SPEAKERS.yaml` exists (or `--roster PATH` / `MEETING_DOCUMENTER_KNOWN_SPEAKERS` points to one), it also blocks every canonical name, alias, and e-mail from that registry. Findings are printed masked. Enable the hook once per clone:
 

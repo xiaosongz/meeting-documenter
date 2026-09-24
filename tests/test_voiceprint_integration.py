@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 import test_pipeline as support
 
@@ -64,6 +65,114 @@ class UtterancesSidecarTests(unittest.TestCase):
         self.assertTrue(case.output.exists())
         self.assertEqual(sidecar.read_text(), "concurrent sidecar")
         self.assertIn("Utterances sidecar not written", case.stdout.getvalue())
+
+
+class LocalSpeakersTests(unittest.TestCase):
+    """MEETING_DOCUMENTER_LOCAL_SPEAKERS / --local-speakers: words only, no cloud diarization."""
+
+    WORDS = [
+        {"text": "Synthetic", "start": 0, "end": 400, "confidence": 0.98, "speaker": None},
+        {"text": "opening.", "start": 400, "end": 900, "confidence": 0.95, "speaker": None},
+        {"text": "Synthetic", "start": 4000, "end": 4400, "confidence": 0.97, "speaker": None},
+        {"text": "response.", "start": 4400, "end": 5000, "confidence": 0.93, "speaker": None},
+    ]
+
+    def base_case(self):
+        case = support.AssemblyAIIntegrationTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        return case
+
+    def case(self, words=None):
+        case = self.base_case()
+        case.poll_result.pop("utterances")
+        case.poll_result["words"] = list(self.WORDS if words is None else words)
+        case.poll_result["audio_duration"] = 5.2
+        return case
+
+    def check_local_run(self, case):
+        submitted = case.posts[1][1]["json"]
+        self.assertIs(submitted["speaker_labels"], False)
+        self.assertNotIn("speakers_expected", submitted)
+        text = case.output.read_text()
+        self.assertIn("**[00:00]** Synthetic opening.\n\n**[00:04]** Synthetic response.\n", text)
+        self.assertIn("words only, no cloud diarization", text)
+        self.assertIn("Speakers are not labelled yet", text)
+        self.assertNotIn("Speaker A", text)
+        self.assertEqual(pipeline.extract_last_timestamp(text), 4)
+        self.assertFalse(pipeline.utterances_sidecar_path(case.output).exists())
+        sidecar = pipeline.words_sidecar_path(case.output)
+        self.assertEqual(sidecar.name, "transcript.words.json")
+        data = json.loads(sidecar.read_text())
+        self.assertEqual((data["schema"], data["type"], data["time_unit"]), (1, "words", "ms"))
+        self.assertEqual(data["transcript_id"], "synthetic-job")
+        self.assertEqual(data["audio_duration_ms"], 5200)
+        self.assertEqual(data["words"][1], {"text": "opening.", "start": 400, "end": 900, "confidence": 0.95})
+        self.assertNotIn("speaker", sidecar.read_text())
+
+    def test_cli_flag_requests_words_only_and_writes_sidecar(self):
+        case = self.case()
+        case.run_main("--local-speakers", "--speakers-expected", "2")
+        self.check_local_run(case)
+        self.assertIn("omitting speakers_expected", case.stdout.getvalue())
+
+    def test_environment_enables_local_speakers(self):
+        case = self.case()
+        with unittest.mock.patch.dict(os.environ, {pipeline.LOCAL_SPEAKERS_ENV: "1"}):
+            case.run_main()
+        self.check_local_run(case)
+
+    def test_default_is_unchanged(self):
+        case = self.base_case()
+        with unittest.mock.patch.dict(os.environ, {pipeline.LOCAL_SPEAKERS_ENV: "0"}):
+            case.run_main()
+        self.assertIs(case.posts[1][1]["json"]["speaker_labels"], True)
+        self.assertTrue(pipeline.utterances_sidecar_path(case.output).exists())
+        self.assertFalse(pipeline.words_sidecar_path(case.output).exists())
+
+    def test_existing_words_sidecar_fails_before_upload(self):
+        case = self.case()
+        case.output.parent.mkdir()
+        sidecar = pipeline.words_sidecar_path(case.output)
+        sidecar.write_text("previous sidecar")
+        with self.assertRaisesRegex(FileExistsError, "Words sidecar"):
+            case.run_main("--local-speakers")
+        case.post.assert_not_called()
+        self.assertEqual(sidecar.read_text(), "previous sidecar")
+
+    def test_no_words_fails_without_transcript(self):
+        case = self.case(words=[])
+        with self.assertRaisesRegex(RuntimeError, "no words"):
+            case.run_main("--local-speakers")
+        self.assertFalse(case.output.exists())
+
+    def test_sidecar_failure_does_not_fail_transcript(self):
+        case = self.case()
+        vp_words = pipeline._voiceprint_words()
+        with unittest.mock.patch.object(vp_words, "dump_sidecar", side_effect=OSError("disk")):
+            case.run_main("--local-speakers")
+        self.assertTrue(case.output.exists())
+        self.assertIn("Words sidecar not written", case.stdout.getvalue())
+
+    def test_mandarin_shaped_words_join_without_spaces_and_split_long_paragraphs(self):
+        # Shape only: 1-3 character tokens, contiguous timing, almost no punctuation.
+        tokens = ["我们", "今天", "讨论", "一下", "方案", "然后", "看看", "进度"] * 10
+        words, t = [], 0
+        for tok in tokens:
+            words.append({"text": tok, "start": t, "end": t + 1000, "confidence": 0.9})
+            t += 1000
+        case = self.case(words=words)
+        case.run_main("--local-speakers")
+        body = case.output.read_text().split("---\n\n")[-1]
+        paragraphs = body.strip().split("\n\n")
+        self.assertGreater(len(paragraphs), 1)  # 80 s without pauses or sentence ends still splits
+        self.assertTrue(paragraphs[0].startswith("**[00:00]** 我们今天讨论一下方案然后看看进度我们"))
+        self.assertNotIn(" 今天", body)
+
+    def test_timestamp_format_matches_assemblyai_lines(self):
+        vp_words = pipeline._voiceprint_words()
+        for ms in (0, 999, 61_900, 599_990, 3_600_000, 3_725_200, 36_000_000):
+            self.assertEqual(vp_words.format_ts(ms / 1000), pipeline._ms_to_ts(ms))
 
 
 class IdentifyNoOpTests(unittest.TestCase):

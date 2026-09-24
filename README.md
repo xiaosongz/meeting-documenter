@@ -113,6 +113,7 @@ Set these in the selected trusted config or shell environment:
 | `ASSEMBLYAI_API_KEY` | required for AssemblyAI | Default backend credential |
 | `GOOGLE_API_KEY` | required for Gemini | Opt-in credential; `GEMINI_API_KEY` also accepted |
 | `MEETING_DOCUMENTER_VOICEPRINT` | unset | `1` installs optional voiceprint dependencies |
+| `MEETING_DOCUMENTER_LOCAL_SPEAKERS` | unset | Experimental: `1` requests AssemblyAI words only (no cloud diarization) and writes a `.words.json` sidecar |
 | `VOICEPRINT_DIR` | `~/.local/share/meeting-documenter/voiceprints` | Voiceprint store (biometric) |
 | `VOICEPRINT_MODEL_DIR` | `~/.cache/meeting-documenter/models` | Voiceprint model code and weights |
 | `VOICEPRINT_FORBIDDEN_ROOTS` | unset | Extra `:`-separated directories the store must never be inside |

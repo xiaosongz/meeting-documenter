@@ -39,6 +39,11 @@ CHUNK_THRESHOLD = 3600  # 60 minutes — split if longer
 DEFAULT_MODEL = "gemini-2.5-flash"
 ASSEMBLYAI_BASE = "https://api.assemblyai.com"
 ASSEMBLYAI_MODELS = ["universal-3-5-pro"]
+# Experimental (until local speaker tracking is integrated): AssemblyAI returns words only
+# (speaker_labels=false, no cloud voice embeddings) and a word-level sidecar is written.
+LOCAL_SPEAKERS_ENV = "MEETING_DOCUMENTER_LOCAL_SPEAKERS"
+LOCAL_PARAGRAPH_PAUSE = 2.0  # s; unlabelled paragraphs break at longer pauses
+LOCAL_PARAGRAPH_MAX = 30.0   # s; ...or after a sentence end once longer than this
 
 SUPPORTED_FORMATS = {
     ".ogg": "audio/ogg", ".mp3": "audio/mp3", ".wav": "audio/wav",
@@ -683,15 +688,18 @@ def _ms_to_ts(ms: int) -> str:
 
 def _aai_format_transcript(utterances: list, audio_path: Path,
                            description: str | None,
-                           metadata: dict | None = None) -> str:
+                           metadata: dict | None = None,
+                           *, local_speakers: bool = False) -> str:
     """Format AssemblyAI utterances into the same markdown shape as the Gemini path.
 
     Speakers stay as acoustic clusters (Speaker A/B/C/D) — AssemblyAI does
     diarization, not voice-ID. SKILL.md Step 2.5 maps clusters → names.
+    With local_speakers, AssemblyAI ran without diarization: utterances are
+    unlabelled paragraphs (speaker None) until local attribution runs.
     """
     now = datetime.now()
     total_dur = int(utterances[-1]["end"] / 1000) if utterances else 0
-    n_speakers = len({u["speaker"] for u in utterances})
+    n_speakers = len({u["speaker"] for u in utterances if u["speaker"] is not None})
     metadata = metadata or {}
     transcript_id = metadata.get("id") or "unknown"
     submitted_models = metadata.get("speech_models") or []
@@ -706,12 +714,27 @@ def _aai_format_transcript(utterances: list, audio_path: Path,
 
     description = description or (
         f"Transcript of {audio_path.stem}, {format_duration(total_dur)}, "
-        f"AssemblyAI pre-recorded STT ({n_speakers} diarized speakers)"
+        + ("AssemblyAI pre-recorded STT (words only; speakers attributed locally)" if local_speakers
+           else f"AssemblyAI pre-recorded STT ({n_speakers} diarized speakers)")
     )
     desc_line = "\ndescription: " + json.dumps(description, ensure_ascii=False)
     requested_models_text = ", ".join(metadata.get("requested_speech_models") or submitted_models) or "not recorded"
     model_used = metadata.get("speech_model_used") or "not returned"
     requested_language = metadata.get("requested_language_code") or "not recorded"
+
+    if local_speakers:
+        tool_text = "AssemblyAI pre-recorded STT (words only, no cloud diarization)"
+        count_text = f"{len(utterances)} paragraphs · speakers not yet attributed"
+        note = """> [!note] Speakers are not labelled yet. AssemblyAI ran without diarization
+> (no cloud voice embeddings); speakers are attributed locally from the
+> word sidecar (`<transcript stem>.words.json`) next to this transcript."""
+    else:
+        tool_text = "AssemblyAI pre-recorded STT (speaker diarization)"
+        count_text = f"{len(utterances)} utterances · {n_speakers} speaker clusters"
+        note = """> [!note] Speakers below are acoustic clusters (Speaker A/B/C/D), not names.
+> AssemblyAI does diarization, not voice identification. Map clusters → real
+> names using the attendee roster + content cues (SKILL.md Step 2.5) before
+> writing the summary."""
 
     header = f"""---
 title: {json.dumps("Meeting Transcript - " + audio_path.stem, ensure_ascii=False)}
@@ -728,7 +751,7 @@ tags:
 
 **Source:** `{audio_path.name}`
 **Transcribed:** {now.strftime('%Y-%m-%d %H:%M')}
-**Tool:** AssemblyAI pre-recorded STT (speaker diarization)
+**Tool:** {tool_text}
 **AAI Transcript ID:** `{transcript_id}`
 **AAI Submitted Models:** `{requested_models_text}`
 **AAI Returned Models:** `{submitted_models_text}`
@@ -736,18 +759,16 @@ tags:
 **AAI Requested Language:** `{requested_language}`
 **AAI Detected Language:** `{language_text}`
 **AAI Speakers Expected:** `{expected_text}`
-**Duration:** ~{format_duration(total_dur)} · {len(utterances)} utterances · {n_speakers} speaker clusters
+**Duration:** ~{format_duration(total_dur)} · {count_text}
 
-> [!note] Speakers below are acoustic clusters (Speaker A/B/C/D), not names.
-> AssemblyAI does diarization, not voice identification. Map clusters → real
-> names using the attendee roster + content cues (SKILL.md Step 2.5) before
-> writing the summary.
+{note}
 
 ---
 
 """
     body = "\n\n".join(
         f"**[{_ms_to_ts(u['start'])}] Speaker {u['speaker']}:** {u['text'].strip()}"
+        if u["speaker"] is not None else f"**[{_ms_to_ts(u['start'])}]** {u['text'].strip()}"
         for u in utterances
     )
     return header + body + "\n"
@@ -795,6 +816,43 @@ def write_utterances_sidecar(output_path: Path, utterances: list, metadata: dict
     return sidecar
 
 
+def words_sidecar_path(transcript_path: Path) -> Path:
+    """`<transcript stem>.words.json` next to the transcript (local speaker attribution input)."""
+    return transcript_path.with_name(transcript_path.stem + ".words.json")
+
+
+def _voiceprint_words():
+    """voiceprint.words is standard-library only, so this import needs no voiceprint extras."""
+    scripts_dir = str(SKILL_DIR / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from voiceprint import words
+    return words
+
+
+def write_words_sidecar(output_path: Path, words: list, metadata: dict) -> Path | None:
+    """Fail-soft like the utterances sidecar: the transcript is already written."""
+    sidecar = words_sidecar_path(output_path)
+    try:
+        vp_words = _voiceprint_words()
+        with sidecar.open("x", encoding="utf-8") as handle:
+            handle.write(vp_words.dump_sidecar(vp_words.sidecar_from_assemblyai(words, metadata)))
+    except Exception as e:  # noqa: BLE001
+        print(f"   ⚠ Words sidecar not written ({type(e).__name__}); local speaker attribution will be skipped.")
+        return None
+    print(f"   Words sidecar: {sidecar.name}")
+    return sidecar
+
+
+def _aai_local_paragraphs(words: list) -> list:
+    """Unlabelled paragraphs in the utterance shape `_aai_format_transcript` renders."""
+    vp_words = _voiceprint_words()
+    turns = vp_words.rebuild_turns(vp_words.unattributed(vp_words.words_from_assemblyai(words)),
+                                   max_pause=LOCAL_PARAGRAPH_PAUSE, max_turn_s=LOCAL_PARAGRAPH_MAX)
+    return [{"speaker": None, "start": int(round(t.start * 1000)), "end": int(round(t.end * 1000)),
+             "text": t.text} for t in turns if t.text]
+
+
 def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
                            context: str | None) -> None:
     """Transcribe via AssemblyAI pre-recorded API (raw HTTP per integration guide).
@@ -819,7 +877,10 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
     print(f"   Duration: {format_duration(info['duration_int'])}")
     print(f"   Size: {info['file_size'] / 1048576:.1f} MB")
     speech_models = args.aai_speech_models or ASSEMBLYAI_MODELS
+    local_speakers = args.local_speakers
     print(f"   Backend: AssemblyAI ({' → '.join(speech_models)})")
+    if local_speakers:
+        print("   Speakers: local attribution (AssemblyAI speaker_labels off, word sidecar)")
 
     # Optional high-precision keyterm boost (names + domain jargon)
     keyterms: list[str] = []
@@ -846,13 +907,15 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
     body = {
         "audio_url": upload_url,
         "speech_models": speech_models,
-        "speaker_labels": True,
+        "speaker_labels": not local_speakers,
     }
     if args.language_code:
         body["language_code"] = args.language_code
     else:
         body["language_detection"] = True
-    if args.speakers_expected is not None:
+    if args.speakers_expected is not None and local_speakers:
+        print("   Note: omitting speakers_expected because AssemblyAI diarization is off.")
+    elif args.speakers_expected is not None:
         body["speakers_expected"] = args.speakers_expected
     if keyterms:
         body["keyterms_prompt"] = keyterms
@@ -865,7 +928,8 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
         if args.speakers_expected is not None
         else ""
     )
-    print(f"📤 Submitting ({' → '.join(speech_models)}, speaker_labels{speaker_msg})...")
+    labels_msg = "speaker_labels=false" if local_speakers else f"speaker_labels{speaker_msg}"
+    print(f"📤 Submitting ({' → '.join(speech_models)}, {labels_msg})...")
     sub = requests.post(f"{ASSEMBLYAI_BASE}/v2/transcript",
                         headers={**headers, "content-type": "application/json"},
                         json=body, timeout=60)
@@ -896,21 +960,33 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
             raise RuntimeError("AssemblyAI returned an unexpected job status.")
         time.sleep(min(5, max(0, args.aai_poll_timeout - (time.monotonic() - t0))))
 
-    utterances = r.get("utterances") or []
-    if not utterances:
-        raise RuntimeError("AssemblyAI returned no diarized speech; no transcript was written.")
-    speakers = sorted({u["speaker"] for u in utterances})
-    print(f"   Utterances: {len(utterances)} | speaker clusters: {len(speakers)} {speakers}")
+    if local_speakers:
+        words = r.get("words") or []
+        if not words:
+            raise RuntimeError("AssemblyAI returned no words; no transcript was written.")
+        utterances = _aai_local_paragraphs(words)
+        speakers = []
+        print(f"   Words: {len(words)} | paragraphs: {len(utterances)} (speakers attributed locally)")
+    else:
+        utterances = r.get("utterances") or []
+        if not utterances:
+            raise RuntimeError("AssemblyAI returned no diarized speech; no transcript was written.")
+        speakers = sorted({u["speaker"] for u in utterances})
+        print(f"   Utterances: {len(utterances)} | speaker clusters: {len(speakers)} {speakers}")
     print(f"   Detected language: {r.get('language_code')} ({r.get('language_confidence')})")
     print(f"   Submitted models returned by AAI: {r.get('speech_models')}")
     r["requested_speech_models"] = speech_models
     r["requested_language_code"] = args.language_code or "automatic detection"
     r["speakers_expected"] = args.speakers_expected
 
-    transcript = _aai_format_transcript(utterances, audio_path, args.description, r)
+    transcript = _aai_format_transcript(utterances, audio_path, args.description, r,
+                                        local_speakers=local_speakers)
     write_transcript(output_path, transcript)
     print(f"\n✅ Transcript saved: {output_path}")
-    write_utterances_sidecar(output_path, utterances, r)
+    if local_speakers:
+        write_words_sidecar(output_path, words, r)
+    else:
+        write_utterances_sidecar(output_path, utterances, r)
 
     if args.archive_dir is not None:
         archive_to_ogg(audio_path, args.archive_dir)
@@ -919,7 +995,10 @@ def run_assemblyai_backend(args, audio_path: Path, output_path: Path,
 
     print(f"\n{'=' * 50}")
     print(f"📊 AssemblyAI backend complete")
-    print(f"   Speakers: {len(speakers)} clusters (map A/B/C/D → names in Step 2.5)")
+    if local_speakers:
+        print("   Speakers: not labelled (attribute locally from the words sidecar)")
+    else:
+        print(f"   Speakers: {len(speakers)} clusters (map A/B/C/D → names in Step 2.5)")
     print(f"   Output: {output_path}")
     print(f"{'=' * 50}")
 
@@ -952,6 +1031,10 @@ def main():
                         help=f"Gemini model (default: {DEFAULT_MODEL})")
     parser.add_argument("--description", default=None,
                         help="Optional description for transcript frontmatter (~150 chars)")
+    parser.add_argument("--local-speakers", action="store_true",
+                        default=os.environ.get(LOCAL_SPEAKERS_ENV) == "1",
+                        help="AssemblyAI (experimental): request words only (speaker_labels=false) "
+                             f"and write a <transcript>.words.json sidecar; default from {LOCAL_SPEAKERS_ENV}=1")
     archive_options = parser.add_mutually_exclusive_group()
     archive_options.add_argument("--archive-dir", type=Path, default=None,
                                  help="Opt in to OGG archival in this directory")
@@ -980,9 +1063,11 @@ def main():
     # Preserve previous transcripts and source aliases; do this before provider work.
     if output_path.exists() or output_path.is_symlink():
         raise FileExistsError("Transcript destination already exists; choose a new output path.")
-    sidecar_path = utterances_sidecar_path(output_path)
-    if args.backend == "assemblyai" and (sidecar_path.exists() or sidecar_path.is_symlink()):
-        raise FileExistsError("Utterances sidecar for this transcript already exists; choose a new output path.")
+    if args.backend == "assemblyai":
+        sidecar_path = (words_sidecar_path if args.local_speakers else utterances_sidecar_path)(output_path)
+        if sidecar_path.exists() or sidecar_path.is_symlink():
+            kind = "Words" if args.local_speakers else "Utterances"
+            raise FileExistsError(f"{kind} sidecar for this transcript already exists; choose a new output path.")
     if args.archive_dir is not None:
         archive_path = archive_destination(audio_path, args.archive_dir)
         if archive_path == output_path.resolve():

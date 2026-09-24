@@ -73,6 +73,7 @@ fi
 | `ASSEMBLYAI_API_KEY` | required for AssemblyAI | Default transcription backend |
 | `GOOGLE_API_KEY` | required for Gemini | Opt-in backend; `GEMINI_API_KEY` is also accepted |
 | `MEETING_DOCUMENTER_VOICEPRINT` | unset | `1` installs the optional voiceprint dependencies on the next `transcribe.sh` run |
+| `MEETING_DOCUMENTER_LOCAL_SPEAKERS` | unset | Experimental. `1` (or `--local-speakers`) runs AssemblyAI with `speaker_labels=false` and writes `<transcript stem>.words.json`; the transcript has unlabelled paragraphs until local speaker tracking lands. Leave unset in normal use |
 | `VOICEPRINT_DIR` | `~/.local/share/meeting-documenter/voiceprints` | Voiceprint store (biometric); refused inside notes roots, Obsidian vaults, or this clone |
 | `VOICEPRINT_MODEL_DIR` | `~/.cache/meeting-documenter/models` | Voiceprint model code and weights |
 | `VOICEPRINT_FORBIDDEN_ROOTS` | unset | Extra `:`-separated directories the store must never be inside |
@@ -211,7 +212,7 @@ Verify files exist, metadata is valid, links resolve in the chosen style, and de
 
 ## Step 8: Cleanup and source preservation
 
-**8a.** Remove only this run's known temporary context/keyterms, voiceprint-identify JSON, and working files. They may contain private meeting data. Check for this run's abandoned child process/temp directory if interrupted; do not broadly delete other runs' files. Keep the transcript (and its utterances sidecar), final archive, and original recording.
+**8a.** Remove only this run's known temporary context/keyterms, voiceprint-identify JSON, and working files. They may contain private meeting data. Check for this run's abandoned child process/temp directory if interrupted; do not broadly delete other runs' files. Keep the transcript (and its utterances or words sidecar), final archive, and original recording.
 
 **8b (audio only).** After a verified archive and completed output checks, use the source-backup helper when the user's workflow authorizes moving the original:
 
