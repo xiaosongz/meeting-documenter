@@ -12,6 +12,10 @@
 #   teams:          Team/project affiliations (helps with auto-matching)
 #   wikilink:       Preferred Obsidian wikilink format for the attendees field
 #   notes:          Optional free-text — email, institution, context
+#   voiceprint:     Optional voiceprint METADATA only, e.g.
+#                   {consent: 2026-01-01, enrolled: 2026-01-15, samples: 60, meetings: 3, channels: [zoom]}
+#                   Record consent before enrolling. Vectors live only in $VOICEPRINT_DIR,
+#                   never in this file or the notes vault (see README § Voiceprint speaker ID).
 #
 # Matching rules:
 #   1. Case-insensitive exact match on canonical_name OR any alias

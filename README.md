@@ -1,12 +1,12 @@
 # meeting-documenter
 
-A [Claude Code](https://claude.com/claude-code) skill that turns a meeting recording or existing transcript into structured, linked notes: a summary, supported action items, a daily-note row, and project references. Release **0.7.0** adds AssemblyAI transcription, explicit model/language controls, provenance, and stronger source-fidelity checks while preserving configurable note layouts.
+A [Claude Code](https://claude.com/claude-code) skill that turns a meeting recording or existing transcript into structured, linked notes: a summary, supported action items, a daily-note row, and project references. Release **0.8.0-beta.1** adds an optional, advisory [voiceprint speaker-ID](#voiceprint-speaker-id-beta) check on top of AssemblyAI diarization; 0.7.0 added AssemblyAI transcription, explicit model/language controls, provenance, and stronger source-fidelity checks. See the [changelog](CHANGELOG.md).
 
 ## What it does
 
 1. Resolves metadata and speaker names using confirmed context and your private registries.
 2. Transcribes audio with **AssemblyAI by default** (`universal-3-5-pro`), or **Gemini on request** (`gemini-2.5-flash`). Gemini includes audio preparation, silence-aware chunking, and truncation retries.
-3. Reviews anonymous speaker clusters or generated names, preserving unresolved identities.
+3. Reviews anonymous speaker clusters or generated names, preserving unresolved identities. Optionally compares clusters with locally stored voiceprints of consenting people as advisory evidence.
 4. Creates a source-linked summary with actual decisions and explicit assignments still open at meeting end; preserves stated deadline wording.
 5. Updates the meeting date's daily note and confirmed project references using your link style and folder conventions.
 6. Creates a named OGG archive after title confirmation, and can preserve the original in your configured backup directory.
@@ -112,8 +112,65 @@ Set these in the selected trusted config or shell environment:
 | `MEETING_DOCUMENTER_ENV_FILE` | this clone's `.env` | Exported selector for trusted configuration; empty disables loading |
 | `ASSEMBLYAI_API_KEY` | required for AssemblyAI | Default backend credential |
 | `GOOGLE_API_KEY` | required for Gemini | Opt-in credential; `GEMINI_API_KEY` also accepted |
+| `MEETING_DOCUMENTER_VOICEPRINT` | unset | `1` installs optional voiceprint dependencies |
+| `VOICEPRINT_DIR` | `~/.local/share/meeting-documenter/voiceprints` | Voiceprint store (biometric) |
+| `VOICEPRINT_MODEL_DIR` | `~/.cache/meeting-documenter/models` | Voiceprint model code and weights |
+| `VOICEPRINT_FORBIDDEN_ROOTS` | unset | Extra `:`-separated directories the store must never be inside |
+| `MEETING_DOCUMENTER_KNOWN_SPEAKERS` | `references/KNOWN_SPEAKERS.yaml` | Private registry path for alias resolution |
 
 The agent resolves directory defaults and conventions during the workflow. `LINK_STYLE` controls agent-authored summary, daily-note, project-reference, and recording links. The Python pipeline initially writes the transcript's `source:` as a bare path; the agent rewrites it after verifying the named archive.
+
+## Voiceprint speaker ID (beta)
+
+AssemblyAI labels speakers as anonymous clusters (`Speaker A`, `Speaker B`). The optional voiceprint check compares each cluster's voice with locally enrolled voiceprints and proposes who it sounds like. It is **advisory only**:
+
+- AssemblyAI remains the diarizer; voiceprints never split, merge, or rename clusters.
+- A proposal is evidence to reconcile with the attendee roster and transcript content, never a decision. Voice/content disagreement means the agent asks you.
+- Below threshold, not enrolled, or too little speech → the cluster stays `Speaker X`.
+- Without calibration on your own data, every proposal is capped at `low` confidence, so voice alone never names anyone.
+- With no dependencies, models, or voiceprints, the check is a no-op that exits 0 without importing torch; transcription never depends on it.
+
+**Setup.**
+
+```bash
+echo 'MEETING_DOCUMENTER_VOICEPRINT=1' >> .env         # opt in; installs torch + sherpa-onnx (large)
+./scripts/transcribe.sh --help                         # bootstraps .venv with the optional deps
+.venv/bin/python scripts/voiceprint/fetch_models.py    # pinned, sha256-verified models → VOICEPRINT_MODEL_DIR
+```
+
+The default embedder is ReDimNet2 (torch; CPU, or Apple-silicon MPS after a CPU parity self-test). ERes2NetV2, CAM++, and WeSpeaker ResNet34 ONNX models run through sherpa-onnx on CPU, and Silero VAD v5 filters non-speech such as ringtones or hold music. Models are downloaded from their upstream releases, not stored in this repository; check each model's license before use.
+
+**Use.** `scripts/identify-speakers.sh` loads the same trusted config as `transcribe.sh`:
+
+```bash
+# Step 2.5a: score the clusters of a new AssemblyAI transcript (uses its .utterances.json sidecar)
+./scripts/identify-speakers.sh identify --audio team-sync.m4a \
+  --utterances "Team-Sync-Transcript.utterances.json" --roster "Alice Example,Bob Example"
+
+# Step 8c: after names are confirmed, enroll a consenting person's cluster
+./scripts/identify-speakers.sh enroll --audio team-sync.m4a \
+  --utterances "Team-Sync-Transcript.utterances.json" --name "Alice Example" --cluster A
+
+# After a few meetings per person: derive thresholds from your own enrolled data
+./scripts/identify-speakers.sh calibrate --dry-run
+./scripts/identify-speakers.sh calibrate
+
+./scripts/identify-speakers.sh list
+./scripts/identify-speakers.sh forget --name "Alice Example" --yes
+```
+
+`calibrate` needs no audio: it rebuilds enrollment leave-one-meeting-out from the stored vectors, sets the open-set threshold τ at the 99th percentile of scores for voices that are not enrolled (about 1% false accepts on your data), τ_low at the 95th, and the swap-margin/gap rules from the 5th percentile of true-speaker trials. It refuses to write anything with fewer than 50 such scores, prints a nested (held-out-meeting) error estimate, and records the clip configuration so later runs reproduce the same clips. Details: [BACKENDS.md § Voiceprint check](references/BACKENDS.md#voiceprint-check-step-25a-optional-beta).
+
+**Limits.** Validated on the maintainer's private meetings; a public benchmark is pending (see the [roadmap](CONTRIBUTING.md#roadmap)). Accuracy drops with short turns (under about 8 s of net speech per cluster), phone or heavily compressed audio, overlapping speech, similar voices, and people with little enrolled speech. The utterances sidecar contains meeting text. Voiceprints from different models are not comparable; changing models means re-enrolling.
+
+## Privacy and consent for voiceprints
+
+Voiceprints are **biometric data**. Speaker embeddings are designed to recognise a person by voice, so treat the store like other sensitive personal data:
+
+- **Consent first.** Enroll only people who agreed to voiceprint enrollment, and record when (for example in the registry's `voiceprint:` metadata). The agent must ask before every enrollment; never enroll someone from a recording they did not know would be used this way.
+- **Local only.** The store lives in `VOICEPRINT_DIR` (default `~/.local/share/meeting-documenter/voiceprints`, mode 700; database and calibration mode 600). The CLI refuses a store inside `VAULT_PATH`, `MEETING_NOTES_DIR`, `VOICEPRINT_FORBIDDEN_ROOTS`, any Obsidian vault, or this clone, so vectors are not synced with notes or committed. Nothing is uploaded; AssemblyAI receives only the audio it already transcribes.
+- **Deletion.** `forget --name ... --yes` deletes a person's vectors from every model and vacuums the database. Delete the whole store directory to remove everything.
+- **Law.** Some jurisdictions regulate biometric identifiers specifically, for example the Illinois Biometric Information Privacy Act (BIPA, written notice and consent, retention schedule) and the EU/UK GDPR (Article 9 special-category data when used to identify a person). Workplace recording and consent rules also vary. This is informational, not legal advice; check what applies to you and to the people you record.
 
 ## Repository layout
 
@@ -124,6 +181,11 @@ scripts/transcribe_pipeline.py   Transcription backends and provenance
 scripts/compress-audio.sh        Named OGG archive and verification
 scripts/split-audio.sh           Silence-aware splitting
 scripts/cleanup-source-audio.sh  Original recording backup
+scripts/identify-speakers.sh     Optional voiceprint CLI wrapper (guarded config loading)
+scripts/identify_speakers.py     Voiceprint identify / enroll / calibrate / list / forget
+scripts/voiceprint/              Embedders, clip selection, scoring, store, calibration, tests
+scripts/dev/check_pii.py         PII/private-file guard (CI and pre-commit hook)
+.githooks/pre-commit             Local hook running the PII guard on staged changes
 references/ONBOARDING_PROMPT.md  Guided setup
 references/BACKENDS.md           Backend flags and speaker mapping
 references/SUMMARY_FORMAT.md     Summary/task fidelity and link styles
@@ -132,6 +194,8 @@ references/WORKFLOW_DETAILS.md   Existing transcripts and integration edge cases
 references/CONTEXT_TEMPLATE.md   Private per-run keyterms/context
 references/*.template.yaml      Fictional registry templates
 .env.example                    Configuration template
+CHANGELOG.md                    Release notes
+CONTRIBUTING.md                 Public-first rules, test data policy, hook setup, roadmap
 ```
 
 ## Privacy and verification
@@ -140,7 +204,7 @@ Audio and supplied hints are sent to the selected transcription provider. Genera
 
 `.gitignore` reduces accidental staging; it cannot prevent force-added files or remove sensitive data already committed. Before publishing a fork or PR, inspect the actual tracked files and staged diff for credentials, private registries, recordings, transcripts, local paths, and identifiers. Rotate any exposed credential.
 
-Tests should use generated/public audio and fictional metadata with mocked provider responses. Do not upload private meeting recordings as a smoke test. A live API test needs authorized test material and incurs provider charges; report it separately from offline test results. With the local environment provisioned, run offline regression checks with `.venv/bin/python3 -B -m unittest discover -s tests -v`. Follow the [quality checklist](references/QUALITY_CHECKLIST.md) before accepting actual meeting notes.
+Tests should use generated/public audio and fictional metadata with mocked provider responses. Do not upload private meeting recordings as a smoke test. A live API test needs authorized test material and incurs provider charges; report it separately from offline test results. With the local environment provisioned, run offline regression checks with `.venv/bin/python3 -B -m unittest discover -s tests -v`, and the voiceprint tests with `.venv/bin/python3 -m pytest scripts/voiceprint/tests` (model-dependent tests skip unless the optional dependencies and models are installed). `scripts/dev/check_pii.py` scans tracked files for local paths, e-mail addresses, private files, and, when your private registry exists, registry names; see [CONTRIBUTING.md](CONTRIBUTING.md). Follow the [quality checklist](references/QUALITY_CHECKLIST.md) before accepting actual meeting notes.
 
 ## Customization and cost
 

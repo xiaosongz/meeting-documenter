@@ -38,6 +38,7 @@ Use configured paths, `DAILY_NOTE_PATH_FORMAT`, and `PROJECT_MEETING_SUBDIR` (em
 - [ ] Original clusters and manual mappings/ambiguities are documented in Diarization Notes.
 - [ ] Split/merged clusters were considered; the expected count was not treated as identity proof.
 - [ ] Unresolved labels remain visible. No person was invented to fill a cluster.
+- [ ] If the voiceprint check (2.5a) ran: no name rests on voice alone; every voice/content disagreement or `inversion`/`conflict` label check was resolved by the user; uncalibrated or `low` proposals were not treated as identification.
 
 ## Transcript authenticity (Step 7 — audio only)
 
@@ -102,6 +103,7 @@ Generative transcription can produce plausible speech in quiet stretches or repe
 - [ ] Cleanup helper, if used, completed successfully; an existing destination was not assumed to contain this source.
 - [ ] No unrelated same-stem audio was removed as a presumed duplicate.
 - [ ] Final response names the created outputs and any material unresolved identity/content limitation.
+- [ ] Voiceprint enrollment (8c), if any, covered only user-confirmed clusters of people who consented; no vectors, clips, or `calibration.json` were written inside notes or this repository.
 
 ## Testing repository changes
 

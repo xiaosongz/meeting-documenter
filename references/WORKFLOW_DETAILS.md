@@ -8,7 +8,7 @@ description: "Edge cases, conditional branches, and fast-paths for the meeting d
 
 When starting from an existing transcript, no transcription service or audio tools are needed.
 
-**N/A:** Steps 1 (audio prep), 2 (transcription), 2.5 (cluster mapping from a new backend run), 2b (archive), and 8b (source backup). Mark their audio-only checklist items N/A.
+**N/A:** Steps 1 (audio prep), 2 (transcription), 2.5 (cluster mapping and voiceprint check from a new backend run), 2b (archive), 8b (source backup), and 8c (voiceprint enrollment). Mark their audio-only checklist items N/A.
 
 **Still required:**
 

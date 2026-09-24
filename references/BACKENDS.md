@@ -1,5 +1,5 @@
 ---
-description: "Backend selection, AssemblyAI request flags, transcription provenance, keyterms, and speaker-cluster mapping."
+description: "Backend selection, AssemblyAI request flags, transcription provenance, keyterms, speaker-cluster mapping, and the optional voiceprint check/enrollment."
 ---
 
 # Transcription Backends
@@ -80,6 +80,8 @@ Keep emitted backend/model metadata in the saved transcript. AssemblyAI output i
 
 HTTP failures, failed jobs, unexpected states, polling timeout, or no speech stop the run rather than creating a successful empty transcript. Empty or whitespace-only Gemini output also fails without writing a transcript. Do not accept an older output at the same path as the failed run's result.
 
+AssemblyAI runs also write the utterances sidecar described under [Voiceprint check](#voiceprint-check-step-25a-optional-beta); a sidecar write problem is reported but never fails a completed transcript.
+
 Record any later retranscription, excluded corrupt interval, or manual name mapping in the transcript's processing/diarization notes. Do not overwrite provenance to make a different run appear original. Transcript identifiers and local source paths are operational/private output, not public examples or test fixtures.
 
 ## Step 2.5: Map clusters to names
@@ -91,6 +93,63 @@ Record any later retranscription, excluded corrupt interval, or manual name mapp
 5. Leave unresolved labels as `Speaker A` or `Unknown speaker` and document uncertainty. Ask the user about material ambiguity instead of choosing a plausible name.
 
 Gemini's generated names require the same evidence check even though a separate cluster-mapping pass may not be needed.
+
+## Voiceprint check (Step 2.5a, optional beta)
+
+Voiceprints are an **advisory** signal layered on AssemblyAI diarization. AssemblyAI still decides the clusters; the voiceprint step only proposes which enrolled person each cluster sounds like. It never edits transcripts, and it never names anyone the roster and content do not support.
+
+**Utterances sidecar.** Each AssemblyAI run writes `<transcript stem>.utterances.json` next to the transcript (created exclusively; an existing sidecar stops the run before upload). It contains the meeting text, so treat it like the transcript: private, never committed.
+
+```json
+{"schema": 1, "source": "assemblyai", "transcript_id": "...", "audio_duration_ms": 3200,
+ "speaker_map": null,
+ "utterances": [{"speaker": "A", "start": 0, "end": 1000, "text": "..."}]}
+```
+
+`speaker_map` stays `null` until names are confirmed; Step 8c writes it (`{"A": "Alice Example", "B": "Bob Example"}`), and later label checks read it.
+
+**Run.** `scripts/identify-speakers.sh` loads the same trusted config as `transcribe.sh`, then runs `scripts/identify_speakers.py`:
+
+```bash
+"${SKILL_DIR}/scripts/identify-speakers.sh" identify \
+  --audio "/path/to/audio.m4a" \
+  --utterances "<...>-Transcript.utterances.json" \
+  --roster "Alice Example,Bob Example" [--channel phone|zoom|room] \
+  --json "/path/to/run/voiceprint-identify.json"
+```
+
+- `--roster` is the Step 0b confirmed attendee list; it closes the candidate set. Names resolve through the private registry's aliases.
+- Output: a cluster × person score matrix (raw cosine, and AS-norm when the cohort is large enough), a proposed mapping, per-cluster confidence (`high`/`low`/`unknown`), best-vs-second gaps, pairwise swap margins, and a `label_check` against any existing `speaker_map`.
+- Exemplars from the same meeting are excluded by default, so a re-run cannot vote for itself.
+- **Graceful no-op:** `status` is `no_voiceprints`, `no_deps`, `no_embedder`, or `error`, with exit code 0. Continue with content-only mapping.
+
+**Reconcile, never auto-apply.**
+
+| Voiceprint result | Action |
+|---|---|
+| `high`, agrees with content mapping | Corroborating evidence; proceed |
+| Disagrees with content, or `label_check` is `inversion`/`conflict` | Stop and ask the user; offer a short clip for listening, cut to a temporary directory outside notes |
+| `low`/`unknown`, insufficient cluster, or person not enrolled | Keep `Speaker X` unless content and roster settle it |
+| `by_elimination` (roster leftover) | Not voice evidence; verify with content |
+
+**Calibration.** Thresholds (τ open-set accept, τ_low closed-roster floor, δ two-speaker swap margin, gap best-vs-second) depend on the embedding model, channel mix, and the people enrolled, so they are calibrated per store. Without `calibration.json` the CLI uses conservative priors and **caps every proposal at `low`** (and disables roster elimination): voice alone never names anyone until `calibrate` has run on the user's own data.
+
+## Voiceprint enrollment (Step 8c)
+
+Enroll only after the user confirmed the names, and only people who consented to biometric enrollment. Ask before enrolling anyone. One call per confirmed cluster:
+
+```bash
+"${SKILL_DIR}/scripts/identify-speakers.sh" enroll \
+  --audio "/path/to/audio.m4a" --utterances "<...>-Transcript.utterances.json" \
+  --name "Alice Example" --cluster A --channel zoom --source confirmed_meeting
+```
+
+- **Guards.** Exit 2: the name is not in the private registry (`--allow-unregistered` to override) or the sidecar `speaker_map` says otherwise. Exit 3: the new clips sound closer to someone already enrolled (likely an inverted or mislabelled cluster). Exit 4: the clip config differs from `calibration.json`. Do not pass `--force` without the user; verify by ear first.
+- **Idempotent.** Re-enrolling the same meeting replaces that meeting's clips; each person keeps at most 200 clips, trimming the most-represented meeting first.
+- **Cohort (optional).** `cohort-add --audio ... --utterances ... [--clusters C,D]` stores clips of other, non-enrolled voices. They are only used for score normalisation (AS-norm) and as "stranger" trials during calibration.
+- **Calibrate.** After at least a few meetings per person, run `identify-speakers.sh calibrate`. It rebuilds enrollment leave-one-meeting-out from the stored vectors (no audio needed): τ = 99th and τ_low = 95th percentile of scores for voices that are *not* enrolled (people with a single meeting, leave-one-speaker-out passes, and cohort voices); δ = 5th percentile of true pair margins; gap = 5th percentile of target-minus-best-other. It needs at least 50 stranger scores (otherwise it writes nothing and exits 5), reports a nested leave-one-meeting-out error estimate, and records the enrollment clip config (with an explicit clip cap) so `identify` and `enroll` reproduce the same clips on CPU or MPS. `--dry-run` reports without writing. Re-run it after enrolling substantially more data.
+- **Admin.** `list` shows people, clip counts, channels and model ids (no vectors). `forget --name "Alice Example" --yes` deletes that person's exemplars and cohort rows from every model and vacuums the database; also remove their `voiceprint:` registry metadata.
+- **Setup.** Set `MEETING_DOCUMENTER_VOICEPRINT=1` and run `transcribe.sh --help` once to install the optional dependencies (`scripts/voiceprint/requirements.txt`), then fetch pinned models with `.venv/bin/python scripts/voiceprint/fetch_models.py` (downloads into `VOICEPRINT_MODEL_DIR`, sha256-verified).
 
 ## Transcript quality and recovery
 
