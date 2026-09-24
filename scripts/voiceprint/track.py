@@ -68,11 +68,11 @@ class TrackParams:
     theta: float = 0.0              # UNKNOWN log-odds, in calibrated LLR units
     switch: float = 10.0            # λ: cost of a state change between consecutive units of a track
     fill_s: float = 10.0            # speech further than this from any unit of its track → UNKNOWN
-    p_uncertain: float = 0.9        # MAP posterior below this turns a name into UNCERTAIN(A|B)
+    p_uncertain: float = 0.0        # MAP posterior below this turns a name into UNCERTAIN(A|B) (0 = off)
     conflict_s: float = 0.5         # simultaneous speech that makes two tracks' equal names a conflict
     foreign_p: float = 2.0          # a name that is another track's primary identity needs this posterior
                                     # (1.0 = off, > 1 = never allowed); see demote_foreign
-    veto_llr: float | None = 2.0    # τ_v: a unit whose own LLR for a name is < θ − τ_v cannot carry
+    veto_llr: float | None = None   # τ_v: a unit whose own LLR for a name is < θ − τ_v cannot carry
                                     # that name (the HMM chain breaks there); None = off
     veto_min_s: float = 2.0         # … when it has at least this much embedded audio (short units are noisy)
     weak_llr: float | None = -2.0   # a named unit whose own LLR for the name is < θ + this → UNCERTAIN

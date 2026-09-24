@@ -145,3 +145,17 @@ def test_committed_ami_qc_loads():
     assert qc is not None and {"IB4001", "IB4002"} <= set(qc["drop_meetings"])
     assert all(len(x) == 2 for x in qc["drop_sources"]) and qc["_drop_sources"]
     assert P.load_qc("nope") is None
+
+
+def test_grid_pick_objectives():
+    from bench.systems.tracker import pick
+    rows = [{"override": {"k": 0}, "ier": 0.180, "loo_ier": 0.18, "false_name": 0.024, "wrong_name": 0.014},
+            {"override": {"k": 1}, "ier": 0.186, "loo_ier": 0.18, "false_name": 0.021, "wrong_name": 0.013},
+            {"override": {"k": 2}, "ier": 0.188, "loo_ier": 0.19, "false_name": 0.020, "wrong_name": 0.012},
+            {"override": {"k": 3}, "ier": 0.210, "loo_ier": 0.20, "false_name": 0.009, "wrong_name": 0.010}]
+    assert pick(rows, "bal")["override"] == {"k": 0}
+    assert pick(rows, "strict")["override"] == {"k": 3}
+    # safe: fewest wrong + false names within the IER slack of the best closed IER
+    assert pick(rows, "safe", ier_slack=0.0075)["override"] == {"k": 1}
+    assert pick(rows, "safe", ier_slack=0.01)["override"] == {"k": 2}
+    assert pick(rows, "safe", ier_slack=0.0)["override"] == {"k": 0}

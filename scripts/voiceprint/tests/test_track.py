@@ -198,9 +198,12 @@ def test_stranger_resembling_an_enrolled_track_is_demoted():
     trs = T.tracks_from_segmentation(slot_seg([(0, 0, 5), (1, 10, 15)], n_slots=2), T.TrackParams())
     assert T.track_identities(units, E, 2) == {0: 0, 1: 2}
     on = T.decode_units(units, trs, E, ["P0", "P1"], T.TrackParams(foreign_p=2.0))
-    off = T.decode_units(units, trs, E, ["P0", "P1"], T.TrackParams(foreign_p=1.0))
+    off = T.decode_units(units, trs, E, ["P0", "P1"], T.TrackParams(foreign_p=1.0, p_uncertain=0.0))
     assert on.label == ["P0"] * 3 + [UNKNOWN] * 3
     assert off.label == ["P0"] * 6
+    # without track identities, a posterior UNCERTAIN band still keeps the weak name off track 1
+    weak = T.decode_units(units, trs, E, ["P0", "P1"], T.TrackParams(foreign_p=1.0, p_uncertain=0.99))
+    assert weak.label[:3] == ["P0"] * 3 and all(x.startswith("UNCERTAIN") for x in weak.label[3:])
 
 
 def test_track_without_any_embedding_is_unknown():
@@ -225,14 +228,14 @@ def test_veto_breaks_the_chain_where_evidence_contradicts_the_name():
     units, trs, E = _chain(E)
     off = T.TrackParams(veto_llr=None, weak_llr=None, p_uncertain=0.0)
     assert T.decode_units(units, trs, E, ["A", "B"], off).label == ["A"] * 5    # the HMM carries A
-    on = T.decode_units(units, trs, E, ["A", "B"], T.TrackParams(weak_llr=None, p_uncertain=0.0))
+    on = T.decode_units(units, trs, E, ["A", "B"], T.TrackParams(veto_llr=2.0, weak_llr=None, p_uncertain=0.0))
     assert on.label == ["A", "A", UNKNOWN, "A", "A"]
     E[2] = [-4, 3, 0]                                             # … and points to B instead
-    on = T.decode_units(units, trs, E, ["A", "B"], T.TrackParams(weak_llr=None, p_uncertain=0.0))
+    on = T.decode_units(units, trs, E, ["A", "B"], T.TrackParams(veto_llr=2.0, weak_llr=None, p_uncertain=0.0))
     assert on.label[2] == "UNCERTAIN(B|A)" and on.label[1] == "A"
     E = np.array([[3, -5, 0]] * 5, np.float32)                    # weakly carried (Σ < 2λ): the run falls
     E[2] = [-4, -5, 0]
-    on = T.decode_units(units, trs, E, ["A", "B"], T.TrackParams(weak_llr=None, p_uncertain=0.0))
+    on = T.decode_units(units, trs, E, ["A", "B"], T.TrackParams(veto_llr=2.0, weak_llr=None, p_uncertain=0.0))
     assert on.label == [UNKNOWN] * 5
 
 
@@ -240,7 +243,7 @@ def test_short_units_are_not_vetoed_and_weak_evidence_is_uncertain():
     E = [[5, -5, 0]] * 5
     E[2] = [-4, -5, 0]
     units, trs, E = _chain(E, emb_s=1.0)                          # below veto_min_s
-    p = T.TrackParams(weak_llr=None, p_uncertain=0.0)
+    p = T.TrackParams(veto_llr=2.0, weak_llr=None, p_uncertain=0.0)
     assert T.decode_units(units, trs, E, ["A", "B"], p).label == ["A"] * 5
     units, trs, _ = _chain(E, emb_s=5.0)
     E[2] = [-2.5, -5, 0]                                          # not a veto at τ_v 3, but weak
@@ -268,7 +271,7 @@ def test_second_voice_of_a_split_slot_does_not_inherit_the_slot_name():
     E = [[5, -5, 0]] * 6 + [[1, -5, 0]] * 4
     units, trs, E = _chain(E)
     X = np.concatenate([voice(0, 6, rng=rng), voice(4, 4, rng=rng)])
-    p = T.TrackParams(weak_llr=None, p_uncertain=0.0)
+    p = T.TrackParams(veto_llr=2.0, weak_llr=None, p_uncertain=0.0)
     whole = T.decode_units(units, trs, E, ["P0", "P1"], p)
     assert whole.label == ["P0"] * 10
     split = T.decode_units(units, trs, E, ["P0", "P1"], p, T.split_chains(units, X, p))

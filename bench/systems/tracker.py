@@ -6,7 +6,7 @@
     python -m bench.systems.tracker run       --dataset ami --split test --cal cal.json \
                                               --params params.json --out <dir> [--system track|b1]
     python -m bench.systems.tracker logo      --dataset aishell4 --grid grid.json --out <dir> \
-                                              [--objective bal|strict] [--system track|b1]
+                                              [--objective bal|strict|safe] [--system track|b1]
         leave-one-group-out for a split without a dev set: for each series, calibrate and
         pick the grid point on the other series, then decode the held-out one
 
@@ -408,7 +408,13 @@ def prepare_split(a, params, log) -> list[Prepared]:
     return [prepare_meeting(m, pool, params, a.backend, roots, model_id, a.device, qc, log) for m in todo]
 
 
-def pick(rows: list[dict], objective: str, max_fn: float = 0.01) -> dict:
+def pick(rows: list[dict], objective: str, max_fn: float = 0.01, ier_slack: float = 0.01) -> dict:
+    if objective == "safe":
+        # fewest confident errors (wrong names on enrolled speech + false names on unenrolled
+        # speech) among the points within ier_slack of the grid's best closed IER
+        best = min(r["ier"] for r in rows)
+        ok = [r for r in rows if r["ier"] <= best + ier_slack]
+        return min(ok, key=lambda r: (r["wrong_name"] + (r["false_name"] or 0.0), r["ier"]))
     if objective == "strict":
         ok = [r for r in rows if r["false_name"] is not None and r["false_name"] <= max_fn]
         if ok:
@@ -438,7 +444,7 @@ def logo(a, preps: list[Prepared], params, log) -> int:
         rows = [{"override": o, **r} for o, r in zip(grid, eval_grid(train, cfgs, a.workers))]
         for r in rows:
             log(f"logo {g} grid " + json.dumps(r))
-        best = pick(rows, a.objective)
+        best = pick(rows, a.objective, ier_slack=a.ier_slack)
         chosen[g] = {"override": best["override"], "train": {k: v for k, v in best.items() if k != "override"},
                      "calibration": cal.to_dict(), "cal_report": rep["all"]}
         log(f"logo {g}: {json.dumps(chosen[g]['override'])} train IER {100 * best['ier']:.2f} "
@@ -484,9 +490,12 @@ def main(argv=None) -> int:
     ap.add_argument("--b1", type=Path, help="B1 params JSON (ahc_id.B1Params fields under 'b1')")
     ap.add_argument("--grid", type=Path, help="tune: JSON list of override dicts")
     ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--objective", default="bal", choices=["bal", "strict"],
+    ap.add_argument("--objective", default="bal", choices=["bal", "strict", "safe"],
                     help="grid choice: min mean(closed IER, leave-one-out IER) as B0's tuning (bal), "
-                         "or min closed IER with false-name ≤ 1 %% (strict)")
+                         "min closed IER with false-name ≤ 1 %% (strict), or min wrong-name + "
+                         "false-name rate within --ier-slack of the best closed IER (safe)")
+    ap.add_argument("--ier-slack", type=float, default=0.0075,
+                    help="safe objective: IER slack (fraction; 0.75 points leaves headroom under a 1-point budget)")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args(argv)
     os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "0")
