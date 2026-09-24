@@ -1,7 +1,7 @@
 name: Tests
 on:
   push:
-    branches: [main, 'codex/**']
+    branches: [main, 'codex/**', 'feat/**']
   pull_request:
 
 permissions:
@@ -20,9 +20,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg bc
-          python -m pip install google-genai requests
+          # Light voiceprint deps only: no torch, sherpa-onnx or model downloads in CI.
+          # Model-dependent voiceprint tests skip cleanly without them.
+          python -m pip install google-genai requests numpy scipy pyyaml pytest
       - name: Check shell syntax
         run: |
-          for script in scripts/*.sh; do bash -n "$script"; done
+          for script in scripts/*.sh .githooks/pre-commit; do bash -n "$script"; done
+      - name: Scan for PII and private files
+        run: python scripts/dev/check_pii.py --tracked --no-roster
       - name: Run offline regression tests
         run: python -B -m unittest discover -s tests -v
+      - name: Run voiceprint tests
+        run: python -B -m pytest -q -p no:cacheprovider -rs scripts/voiceprint/tests

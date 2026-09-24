@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Pre-commit PII guard. Enable once per clone:  git config core.hooksPath .githooks
+# Blocks absolute home/volume paths, non-example e-mail addresses, forbidden files
+# (voiceprint stores, calibration.json, sidecars, audio, .env) and, when the private
+# references/KNOWN_SPEAKERS.yaml exists, any registry name/alias/e-mail in staged changes.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+PYTHON="${ROOT}/.venv/bin/python3"
+[[ -x "${PYTHON}" ]] || PYTHON="$(command -v python3)"
+exec "${PYTHON}" "${ROOT}/scripts/dev/check_pii.py" --staged

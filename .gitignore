@@ -35,7 +35,11 @@ backups/
 *.flac
 *.aac
 *.aiff
+*.aif
 *.webm
+*.opus
+*.oga
+*.caf
 
 # Local transcripts and generated notes
 *-Transcript.md
@@ -43,3 +47,22 @@ MeetingNotes/
 recordings/
 raw/
 *.log
+*.utterances.json
+
+# Voiceprint biometrics, calibration and models — never in this repo
+# (VOICEPRINT_DIR / VOICEPRINT_MODEL_DIR default to ~/.local/share and ~/.cache)
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+calibration.json
+*.npy
+*.npz
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.safetensors
+voiceprints/
+models/
+.pytest_cache/
