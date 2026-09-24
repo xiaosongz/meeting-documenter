@@ -14,11 +14,14 @@ Pipeline
       of wall time; sparse speech keeps growing a unit (up to `pool_s`) until it holds
       `min_embed_s` of clean audio → one ReDimNet2 embedding per unit
     → AS-norm score vs every roster model → duration-aware calibrated LLR (Calibration)
-    → per track, an HMM over its units (states = roster ∪ UNKNOWN; UNKNOWN has constant
+    → slot consistency: a track whose unit embeddings form two voices is split into chains
+    → per chain, an HMM over its units (states = roster ∪ UNKNOWN; UNKNOWN has constant
       log-odds θ; a state change costs λ) → forward-backward posteriors; units without an
-      embedding take their state from their neighbours on the same track
+      embedding take their state from their neighbours on the same chain; a unit whose own
+      LLR contradicts a name (< θ − τ_v) cannot carry it (veto: the chain breaks there)
     → exclusive assignment: two tracks speaking at the same time cannot carry one name
-    → labels: MAP state; a name whose posterior is below `p_uncertain` → UNCERTAIN(A|B)
+    → labels: MAP state; a vetoed unit, a name with weak own evidence or a posterior below
+      `p_uncertain` → UNCERTAIN(A|B)
     → UNKNOWN units clustered across tracks → GUEST_n (≥ `guest_min_s` of speech)
     → second pass: every contiguous turn ≥ `turn_min_s` is re-embedded whole and relabelled
       when its own posterior is confident
@@ -65,10 +68,18 @@ class TrackParams:
     theta: float = 0.0              # UNKNOWN log-odds, in calibrated LLR units
     switch: float = 10.0            # λ: cost of a state change between consecutive units of a track
     fill_s: float = 10.0            # speech further than this from any unit of its track → UNKNOWN
-    p_uncertain: float = 0.0        # MAP posterior below this turns a name into UNCERTAIN(A|B)
+    p_uncertain: float = 0.9        # MAP posterior below this turns a name into UNCERTAIN(A|B)
     conflict_s: float = 0.5         # simultaneous speech that makes two tracks' equal names a conflict
     foreign_p: float = 2.0          # a name that is another track's primary identity needs this posterior
                                     # (1.0 = off, > 1 = never allowed); see demote_foreign
+    veto_llr: float | None = 2.0    # τ_v: a unit whose own LLR for a name is < θ − τ_v cannot carry
+                                    # that name (the HMM chain breaks there); None = off
+    veto_min_s: float = 2.0         # … when it has at least this much embedded audio (short units are noisy)
+    weak_llr: float | None = -2.0   # a named unit whose own LLR for the name is < θ + this → UNCERTAIN
+    # slot consistency: a track whose unit embeddings form two voices is split, and each part
+    # decoded (and identified) as a chain of its own; see split_chains
+    split_cos: float | None = 0.6   # split when the two 2-means centroids have cosine < this (None = off)
+    split_min_s: float = 15.0       # … and each part holds at least this much embedded speech
     # guests
     guest_cos: float = 0.55         # AHC (average linkage) cosine threshold between UNKNOWN groups
     guest_min_s: float = 5.0        # guest clusters with less speech stay UNKNOWN
@@ -485,34 +496,142 @@ def unit_emissions(units: list[Unit], S: np.ndarray, cal: Calibration, theta: fl
     return E
 
 
-def decode_units(units: list[Unit], trs: Tracks, E: np.ndarray, names: list[str],
-                 params: TrackParams) -> Decoded:
-    """Per-track HMM posteriors, then exclusive assignment across simultaneous tracks."""
-    K = len(names)
-    post = np.zeros((len(units), K + 1), np.float32)
-    by_track: dict[int, list[int]] = {}
-    for i, u in enumerate(units):
-        by_track.setdefault(u.track, []).append(i)
-    for idx in by_track.values():
+def _chain_posteriors(units: list[Unit], E: np.ndarray, chain: np.ndarray, switch: float) -> np.ndarray:
+    post = np.zeros(E.shape, np.float32)
+    by_chain: dict[int, list[int]] = {}
+    for i in range(len(units)):
+        by_chain.setdefault(int(chain[i]), []).append(i)
+    for idx in by_chain.values():
         idx.sort(key=lambda i: units[i].t0)
-        post[idx] = hmm_posteriors(E[idx].astype(np.float64), params.switch)
+        post[idx] = hmm_posteriors(E[idx].astype(np.float64), switch)
+    return post
+
+
+def veto_mask(units: list[Unit], E: np.ndarray, K: int, veto_llr: float | None,
+              min_s: float = 0.0) -> np.ndarray:
+    """(n_units, K) True where a unit's own evidence contradicts a name: its LLR is below the
+    UNKNOWN emission θ (column K) by more than veto_llr. Relative to θ, because θ is where
+    the decoder's evidence for a name starts."""
+    ban = np.zeros((len(units), K), bool)
+    if veto_llr is None or not K:
+        return ban
+    has = np.array([u.emb_row >= 0 and u.emb_s >= min_s for u in units], bool)
+    ban[has] = E[has, :K] < E[has, K:K + 1] - veto_llr
+    return ban
+
+
+def decode_units(units: list[Unit], trs: Tracks, E: np.ndarray, names: list[str],
+                 params: TrackParams, chain: np.ndarray | None = None) -> Decoded:
+    """Per-chain HMM posteriors (a chain is a track, or a part of a split track), then
+    exclusive assignment across simultaneous tracks.
+
+    Evidence against the carried name is never smoothed over: a unit whose own LLR for a
+    name is below θ − veto_llr cannot take that name. The HMM must leave the name there, at
+    the usual switch cost on both sides, so a run carried only by weak evidence (less than
+    2λ in total) falls to UNKNOWN with it; a strongly supported run resumes after the unit.
+    A unit that loses its name this way becomes UNKNOWN or, when the HMM moves it to another
+    name, UNCERTAIN(new|old). A named unit whose own LLR is below θ + weak_llr, or
+    whose posterior is below p_uncertain, is UNCERTAIN too: an abstention, not a guess."""
+    K = len(names)
+    chain = np.array([u.track for u in units]) if chain is None else np.asarray(chain)
+    ban = veto_mask(units, E, K, params.veto_llr, params.veto_min_s)
+    post = _chain_posteriors(units, E, chain, params.switch)
+    lost = np.full(len(units), -1)
+    if ban.any():
+        pre = post.argmax(1)
+        hit = (pre < K) & ban[np.arange(len(units)), np.minimum(pre, K - 1)]
+        if hit.any():
+            Eh = E.astype(np.float64).copy()
+            Eh[:, :K][ban] = -1e4
+            post = _chain_posteriors(units, Eh, chain, params.switch)
+            lost[hit] = pre[hit]
     state = post.argmax(1)
     state[post[:, K] >= post[np.arange(len(state)), state] - 1e-6] = K     # ties (no evidence) → UNKNOWN
     if params.foreign_p != 1.0 and K:
-        state = demote_foreign(units, post, state, K, params, E)
+        state = demote_foreign(units, post, state, K, params, E, chain)
     state = resolve_conflicts(units, trs, post, state, K, params)
+    has = np.array([u.emb_row >= 0 for u in units], bool)
     labels, conf = [], np.zeros(len(units), np.float32)
     for i, s in enumerate(state):
         conf[i] = post[i, s]
         if s == K:
             labels.append(UNKNOWN)
             continue
-        if params.p_uncertain and post[i, s] < params.p_uncertain:
-            alt = [j for j in np.argsort(-post[i]) if j != s][0]
+        alt = [j for j in np.argsort(-post[i]) if j != s][0]
+        if lost[i] >= 0 and lost[i] != s:
+            alt = int(lost[i])
+        weak = params.weak_llr is not None and has[i] and E[i, s] < E[i, K] + params.weak_llr
+        if (params.p_uncertain and post[i, s] < params.p_uncertain) or weak or (lost[i] >= 0 and lost[i] != s):
             labels.append(uncertain_label([names[s]] + ([names[alt]] if alt < K else [])))
         else:
             labels.append(names[s])
     return Decoded(names, post, state, labels, conf)
+
+
+def split_chains(units: list[Unit], X: np.ndarray, params: TrackParams) -> np.ndarray:
+    """Chain id per unit: its track, unless the track's unit embeddings form two voices.
+
+    A boundary slot can conflate two people (nemotron reuses a slot). Per track, the
+    embedded units are split by weighted spherical 2-means; the split is kept when the two
+    centroids' cosine is below `split_cos` and each part holds ≥ `split_min_s` of embedded
+    speech. Parts are split again under the same test. Units without an embedding join the
+    part of the nearest embedded unit in time. Chain ids: the track id for the first part,
+    then new ids past the last track."""
+    chain = np.array([u.track for u in units], int)
+    if params.split_cos is None or not len(X):
+        return chain
+    Xn = _l2(X)
+    nxt = (max(chain) + 1) if len(chain) else 0
+    by_track: dict[int, list[int]] = {}
+    for i, u in enumerate(units):
+        by_track.setdefault(u.track, []).append(i)
+    for k, idx in by_track.items():
+        emb = [i for i in idx if units[i].emb_row >= 0]
+        parts = [emb]
+        out: list[list[int]] = []
+        while parts:
+            p = parts.pop()
+            two = _bisect(p, units, Xn, params)
+            if two is None:
+                out.append(p)
+            else:
+                parts += two
+        if len(out) < 2:
+            continue
+        out.sort(key=lambda p: -sum(units[i].emb_s for i in p))       # the largest part keeps id k
+        ids = [k] + list(range(nxt, nxt + len(out) - 1))
+        nxt += len(out) - 1
+        for cid, p in zip(ids, out):
+            chain[p] = cid
+        t_emb = np.array([(units[i].t0 + units[i].t1) / 2 for i in emb])
+        c_emb = chain[emb]
+        for i in idx:
+            if units[i].emb_row < 0:
+                chain[i] = c_emb[int(np.argmin(np.abs(t_emb - (units[i].t0 + units[i].t1) / 2)))]
+    return chain
+
+
+def _bisect(idx: list[int], units: list[Unit], Xn: np.ndarray, params: TrackParams) -> list[list[int]] | None:
+    w = np.array([units[i].emb_s for i in idx])
+    if len(idx) < 2 or w.sum() < 2 * params.split_min_s:
+        return None
+    V = Xn[[units[i].emb_row for i in idx]]
+    mu = _l2((V * w[:, None]).sum(0))
+    a = int(np.argmin(V @ mu))                                  # farthest from the mean …
+    b = int(np.argmin(V @ V[a]))                                # … and farthest from that
+    C = np.stack([V[a], V[b]])
+    for _ in range(20):
+        lab = (V @ C.T).argmax(1)
+        if lab.min() == lab.max():
+            return None
+        newC = np.stack([_l2((V[lab == j] * w[lab == j, None]).sum(0)) for j in (0, 1)])
+        if np.allclose(newC, C, atol=1e-6):
+            break
+        C = newC
+    ws = [w[lab == j].sum() for j in (0, 1)]
+    if min(ws) < params.split_min_s or float(C[0] @ C[1]) >= params.split_cos:
+        return None
+    return [[i for i, l in zip(idx, lab) if l == j] for j in (0, 1)]
 
 
 def track_identities(units: list[Unit], E: np.ndarray, K: int) -> dict[int, int]:
@@ -540,16 +659,36 @@ def track_identities(units: list[Unit], E: np.ndarray, K: int) -> dict[int, int]
 
 
 def demote_foreign(units: list[Unit], post: np.ndarray, state: np.ndarray, K: int,
-                   params: TrackParams, E: np.ndarray) -> np.ndarray:
+                   params: TrackParams, E: np.ndarray, chain: np.ndarray | None = None) -> np.ndarray:
     """With global slots, a speaker normally lives on one track. A unit labelled with a name
     that is *another* track's primary identity keeps it only with posterior ≥ foreign_p;
-    otherwise it falls back to UNKNOWN (an abstention, never a different guess)."""
+    otherwise it falls back to UNKNOWN (an abstention, never a different guess).
+
+    Primary identities are assigned per physical track. When a track was split into chains,
+    its primary name belongs to the one chain with the strongest mean evidence for it; the
+    other chains of that track may carry only names no track owns. So the second voice of a
+    conflated slot can neither inherit the slot's name nor take a name from another track."""
+    chain = np.array([u.track for u in units]) if chain is None else np.asarray(chain)
     prim = track_identities(units, E, K)
     owner = {s: k for k, s in prim.items() if s < K}
+    tr = np.array([u.track for u in units])
+    split = {k for k in set(tr.tolist()) if len(set(chain[tr == k].tolist())) > 1}
+    for s, k in list(owner.items()):
+        if k in split:
+            best, arg = -np.inf, k
+            for c in set(chain[tr == k].tolist()):
+                m = [i for i in np.flatnonzero(chain == c) if units[i].emb_row >= 0]
+                w = np.array([units[i].emb_s for i in m])
+                if len(m) and w.sum() > 0:
+                    v = float((E[m, s] * w).sum() / w.sum())
+                    if v > best:
+                        best, arg = v, int(c)
+            owner[s] = arg
     state = state.copy()
     for i, u in enumerate(units):
         s = int(state[i])
-        if s < K and owner.get(s, u.track) != u.track and post[i, s] < params.foreign_p:
+        c = int(chain[i])
+        if s < K and owner.get(s, c) != c and post[i, s] < params.foreign_p:
             state[i] = K
     return state
 
@@ -868,11 +1007,12 @@ def decode_all(trs: Tracks, units: list[Unit], X: np.ndarray, scorer: Scorer, ca
     second-pass scores (it embeds the candidate turns); None skips the second pass."""
     S = scorer.scores(X)
     E = unit_emissions(units, S, cal, params.theta)
-    dec = decode_units(units, trs, E, scorer.names, params)
+    chain = split_chains(units, X, params)
+    dec = decode_units(units, trs, E, scorer.names, params, chain)
     labels = cluster_guests(units, dec.label, X, params) if len(X) else dec.label
     fl = label_frames(trs, units, labels, dec.conf, params)
     info = {"units": len(units), "embedded_units": int(sum(u.emb_row >= 0 for u in units)),
-            "tracks": len(trs.tracks)}
+            "tracks": len(trs.tracks), "chains": len(set(chain.tolist()))}
     if params.second_pass and turn_scores is not None:
         cands = long_turns(trs, fl, units, params)
         if cands:
@@ -969,7 +1109,8 @@ def track(audio_path, roster: list[str] | None, store, embedder, *, backend: str
     info["decode_s"] = round(time.time() - t, 2)
     info.update(dinfo)
     meta = {"backend": backend, "params": params.to_dict(), "calibration": cal.to_dict(),
-            "roster": scorer.names, "model_id": embedder.model_id, "duration": round(dur, 3)}
+            "roster": scorer.names, "channel": channel, "model_id": embedder.model_id,
+            "duration": round(dur, 3)}
     tl = build_timeline(trs, fl, meta)
     info.update(total_s=round(time.time() - t_all, 2), xrt=round(dur / max(time.time() - t_all, 1e-6), 1),
                 peak_footprint_gb=gb(peak_footprint()))
