@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speaker audit</title>
+<!-- Local listening audit page written by `identify_speakers.py audit sample`.
+     Self-contained: no network access and no external assets; clips are the local files in ./clips/.
+     Answers live in this browser's localStorage until you press Export (answers.json). -->
+<style>
+:root {
+  --bg: #f6f6f3; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --line: #d9d9d3;
+  --accent: #2f6fdf; --accent-ink: #ffffff; --target: rgba(47, 111, 223, 0.22); --head: #d0342c;
+  --done: #3a8f5a; --warn: #b7791f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #20201f; --ink: #ececea; --muted: #a2a29c; --line: #3a3a37;
+    --accent: #6b9cf0; --accent-ink: #0d0d0c; --target: rgba(107, 156, 240, 0.28); --head: #ff6b61;
+    --done: #62c08a; --warn: #e0a84a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+       font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+header, main { max-width: 980px; margin: 0 auto; padding: 12px 16px; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+h1 { font-size: 17px; margin: 0; font-weight: 600; }
+.muted { color: var(--muted); }
+.grow { flex: 1 1 auto; }
+.progress { flex: 1 1 100%; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.progress > div { height: 100%; width: 0; background: var(--done); }
+label.toggle { user-select: none; white-space: nowrap; }
+button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+         border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+input:not([type]) { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+                   border-radius: 4px; padding: 1px 6px; }
+button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--line);
+      border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#bar { position: relative; height: 34px; margin: 12px 0; background: var(--bg); border: 1px solid var(--line);
+       border-radius: 6px; cursor: pointer; overflow: hidden; }
+#bar .target { position: absolute; top: 0; bottom: 0; background: var(--target);
+               border-left: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+#bar .head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--head); left: 0; }
+#bar .lbl { position: absolute; bottom: 2px; font-size: 11px; color: var(--muted); pointer-events: none; }
+#answers button { min-width: 120px; text-align: left; }
+#answers .sep { flex-basis: 100%; height: 0; }
+#reveal { min-height: 1.4em; margin-top: 8px; }
+#list { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 4px; }
+#list button { padding: 3px 0; font-size: 12px; text-align: center; }
+#list button.answered { border-color: var(--done); color: var(--done); }
+#list button.current { outline: 2px solid var(--accent); }
+#list .mt { grid-column: 1 / -1; font-size: 12px; color: var(--muted); margin-top: 6px; }
+#msg { color: var(--warn); }
+#selftest { white-space: pre-wrap; font: 12px ui-monospace, Menlo, monospace; }
+@media (max-width: 600px) { #answers button { min-width: calc(50% - 8px); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Speaker audit</h1><span class="muted" id="auditId"></span>
+  <span class="grow"></span>
+  <span id="count"></span><span class="muted" id="eta"></span>
+  <div class="progress"><div id="progress"></div></div>
+  <label class="toggle"><input type="checkbox" id="autoplay" checked> Autoplay next</label>
+  <label class="toggle"><input type="checkbox" id="showSys"> Show system label after answering</label>
+  <label class="toggle">Annotator <input id="annotator" size="8" placeholder="optional"></label>
+  <span class="grow"></span>
+  <button id="export" title="Download answers.json">Export answers.json</button>
+  <button id="importBtn" title="Load a previously exported answers.json">Import…</button>
+  <input type="file" id="importFile" accept="application/json,.json" hidden>
+  <span id="msg"></span>
+</header>
+<main>
+  <section class="card" aria-live="polite">
+    <div class="row">
+      <strong id="itemTitle"></strong><span class="muted" id="itemMeeting"></span>
+      <span class="grow"></span>
+      <button id="prev" title="Previous item (←)">← Prev</button>
+      <button id="next" title="Next item (→)">Next →</button>
+    </div>
+    <div id="bar" title="Click to seek. Shaded = the span to judge (a rising tone marks its start, a falling tone its end).">
+      <div class="target" id="target"></div><div class="head" id="head"></div>
+      <span class="lbl" style="left:4px">context</span>
+    </div>
+    <div class="row">
+      <button id="play" title="Play / pause (Space)">▶ Play</button>
+      <button id="replay" title="Replay from the start (R)">↺ Replay</button>
+      <button id="targetOnly" title="Play only the shaded span (T)">Target only</button>
+      <span class="muted">Who speaks in the shaded span, between the two tones?</span>
+    </div>
+    <div class="row" id="answers" style="margin-top:12px"></div>
+    <div id="reveal" class="muted"></div>
+  </section>
+  <section class="card">
+    <div class="muted" style="margin-bottom:6px">
+      Keys: <kbd>1</kbd>–<kbd>9</kbd> names · <kbd>G</kbd> guest / someone else · <kbd>O</kbd> overlap
+      · <kbd>U</kbd> unsure · <kbd>N</kbd> no speech · <kbd>Space</kbd> play/pause · <kbd>R</kbd> replay
+      · <kbd>T</kbd> target only · <kbd>←</kbd>/<kbd>→</kbd> prev/next.
+      Answering moves on to the next unanswered item. Answers are saved in this browser as you go;
+      press Export when done.
+    </div>
+    <div id="list"></div>
+  </section>
+  <pre id="selftest"></pre>
+</main>
+<audio id="player" preload="auto"></audio>
+<script id="audit-data" type="application/json">/*__AUDIT_DATA__*/null</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("audit-data").textContent);
+const ITEMS = DATA.items;
+const KEY = "speaker-audit:" + DATA.audit_id;
+const $ = (id) => document.getElementById(id);
+const player = $("player");
+const OTHER = [["g", "guest", "Guest / someone else"], ["o", "overlap", "Overlap (2+ at once)"],
+               ["u", "unsure", "Unsure"], ["n", "nospeech", "No speech"]];
+
+function loadState() {
+  try { const s = JSON.parse(localStorage.getItem(KEY) || "null"); if (s && s.answers) return s; } catch (e) {}
+  return { answers: {}, cursor: 0, annotator: "", exported: null };
+}
+let state = loadState();
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(state)); $("msg").textContent = ""; }
+  catch (e) { $("msg").textContent = "Could not save in this browser: export often."; }
+}
+
+let cur = Math.min(Math.max(state.cursor || 0, 0), ITEMS.length - 1);
+let shownAt = performance.now();
+let stopAt = null;
+
+function names(item) {            // [keys (≤9, 1..9), other roster names without keys]
+  const inp = DATA.inputs[item.input];
+  const keys = inp.keys || [];
+  return [keys, (inp.roster || []).filter((n) => !keys.includes(n))];
+}
+function answerLabel(item, a) {
+  if (!a) return "";
+  if (a.startsWith("name:")) return a.slice(5);
+  const o = OTHER.find((x) => x[1] === a); return o ? o[2] : a;
+}
+
+function renderAnswers(item) {
+  const box = $("answers"); box.textContent = "";
+  const a = state.answers[item.id];
+  const [keys, extra] = names(item);
+  const add = (code, key, text) => {
+    const b = document.createElement("button");
+    b.innerHTML = (key ? "<kbd></kbd> " : "") + "<span></span>";
+    if (key) b.querySelector("kbd").textContent = key.toUpperCase();
+    b.querySelector("span").textContent = text;
+    b.dataset.code = code;
+    const on = a && a.answer === code;
+    b.className = on ? "on" : ""; b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.onclick = () => answer(code);
+    box.appendChild(b);
+  };
+  keys.forEach((n, i) => add("name:" + n, String(i + 1), n));
+  extra.forEach((n) => add("name:" + n, "", n));
+  const sep = document.createElement("span"); sep.className = "sep"; box.appendChild(sep);
+  OTHER.forEach(([k, code, text]) => add(code, k, text));
+}
+
+function renderReveal(item) {
+  const a = state.answers[item.id];
+  $("reveal").textContent = a && $("showSys").checked
+    ? "System label: " + item.system + (item.kind !== "name" ? "  (" + item.kind + ")" : "")
+      + "  ·  your answer: " + answerLabel(item, a.answer)
+    : "";
+}
+
+function renderList() {
+  const box = $("list"); box.textContent = "";
+  let lastInput = -1;
+  ITEMS.forEach((it, i) => {
+    if (it.input !== lastInput) {
+      const m = document.createElement("div"); m.className = "mt";
+      m.textContent = DATA.inputs[it.input].name; box.appendChild(m); lastInput = it.input;
+    }
+    const b = document.createElement("button");
+    b.textContent = String(i + 1);
+    const a = state.answers[it.id];
+    b.className = (a ? "answered " : "") + (i === cur ? "current" : "");
+    b.title = a ? answerLabel(it, a.answer) : "not answered";
+    b.onclick = () => go(i, $("autoplay").checked);
+    box.appendChild(b);
+  });
+}
+
+function renderProgress() {
+  const done = ITEMS.filter((it) => state.answers[it.id]).length;
+  $("count").textContent = done + " / " + ITEMS.length + " answered";
+  $("progress").style.width = (100 * done / Math.max(ITEMS.length, 1)) + "%";
+  const ms = ITEMS.map((it) => state.answers[it.id] && state.answers[it.id].ms).filter((x) => x > 0).sort((a, b) => a - b);
+  $("eta").textContent = ms.length >= 5
+    ? " · ~" + Math.round(ms[Math.floor(ms.length / 2)] * (ITEMS.length - done) / 60000) + " min left" : "";
+}
+
+function renderItem() {
+  const it = ITEMS[cur];
+  $("itemTitle").textContent = "Item " + (cur + 1) + " of " + ITEMS.length;
+  $("itemMeeting").textContent = " · " + DATA.inputs[it.input].name;
+  const dur = it.dur || 1;
+  $("target").style.left = (100 * it.t0 / dur) + "%";
+  $("target").style.width = (100 * (it.t1 - it.t0) / dur) + "%";
+  $("head").style.left = "0";
+  renderAnswers(it); renderReveal(it); renderList(); renderProgress();
+}
+
+function go(i, autoplay) {
+  if (!ITEMS.length) return;
+  cur = (i + ITEMS.length) % ITEMS.length;
+  state.cursor = cur; save();
+  stopAt = null;
+  const it = ITEMS[cur];
+  if (it.clip) { player.src = it.clip; player.load(); }
+  shownAt = performance.now();
+  renderItem();
+  if (autoplay) play(0);
+  preloadNext();
+}
+
+let preloader = null;
+function preloadNext() {
+  const nxt = ITEMS[(cur + 1) % ITEMS.length];
+  if (!nxt || !nxt.clip) return;
+  preloader = new Audio(); preloader.preload = "auto"; preloader.src = nxt.clip;
+}
+
+function play(from, until) {
+  if (from != null) { try { player.currentTime = from; } catch (e) {} }
+  stopAt = until == null ? null : until;
+  const p = player.play(); if (p && p.catch) p.catch(() => {});
+}
+function togglePlay() { if (player.paused) play(player.ended ? 0 : null); else player.pause(); }
+function targetOnly() { const it = ITEMS[cur]; play(it.t0, it.t1); }
+
+function tick() {
+  const it = ITEMS[cur];
+  if (it && it.dur) $("head").style.left = (100 * Math.min(player.currentTime / it.dur, 1)) + "%";
+  if (stopAt != null && player.currentTime >= stopAt) { player.pause(); stopAt = null; }
+  $("play").textContent = player.paused ? "▶ Play" : "❚❚ Pause";
+  requestAnimationFrame(tick);
+}
+
+function nextUnanswered(from) {
+  for (let k = 1; k <= ITEMS.length; k++) {
+    const j = (from + k) % ITEMS.length;
+    if (!state.answers[ITEMS[j].id]) return j;
+  }
+  return -1;
+}
+
+function answer(code) {
+  const it = ITEMS[cur];
+  const prev = state.answers[it.id];
+  const now = new Date().toISOString();
+  const rec = prev ? Object.assign({}, prev) : { ms: Math.round(performance.now() - shownAt), first_time: now };
+  if (prev && prev.answer !== code && $("showSys").checked) rec.changed_after_reveal = true;
+  rec.answer = code; rec.time = now;
+  state.answers[it.id] = rec; save();
+  const j = nextUnanswered(cur);
+  if (prev || j < 0) { renderItem(); if (j < 0) $("msg").textContent = "All items answered: press Export."; return; }
+  player.pause();
+  go(j, $("autoplay").checked);
+}
+
+function buildExport() {
+  return { schema: 1, type: "speaker-audit-answers", audit_id: DATA.audit_id,
+           annotator: state.annotator || null, exported: new Date().toISOString(),
+           n_items: ITEMS.length, n_answered: Object.keys(state.answers).length, answers: state.answers };
+}
+function doExport() {
+  const blob = new Blob([JSON.stringify(buildExport(), null, 1)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "answers.json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  state.exported = new Date().toISOString(); save();
+  $("msg").textContent = "Exported " + Object.keys(state.answers).length + " answers.";
+}
+function doImport(file) {
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const obj = JSON.parse(r.result);
+      if (obj.type !== "speaker-audit-answers") throw new Error("not an answers file");
+      if (obj.audit_id !== DATA.audit_id && !confirm("These answers are for audit " + obj.audit_id + ", not " + DATA.audit_id + ". Import anyway?")) return;
+      const ids = new Set(ITEMS.map((it) => it.id));
+      let n = 0;
+      for (const [id, a] of Object.entries(obj.answers || {})) if (ids.has(id)) { state.answers[id] = a; n++; }
+      save(); renderItem(); $("msg").textContent = "Imported " + n + " answers.";
+    } catch (e) { $("msg").textContent = "Import failed: " + e.message; }
+  };
+  r.readAsText(file);
+}
+
+function onKey(e) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const it = ITEMS[cur]; if (!it) return;
+  if (k >= "1" && k <= "9") {
+    const n = names(it)[0][Number(k) - 1]; if (n) answer("name:" + n);
+  } else if (OTHER.some((o) => o[0] === k)) {
+    answer(OTHER.find((o) => o[0] === k)[1]);
+  } else if (k === " ") { togglePlay();
+  } else if (k === "r") { play(0);
+  } else if (k === "t") { targetOnly();
+  } else if (k === "ArrowRight") { go(cur + 1, $("autoplay").checked);
+  } else if (k === "ArrowLeft") { go(cur - 1, $("autoplay").checked);
+  } else return;
+  e.preventDefault();
+}
+
+async function selftest() {
+  const out = { checks: {}, errors: [] };
+  const ok = (name, cond) => { out.checks[name] = !!cond; if (!cond) out.errors.push(name); };
+  const press = (key) => document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  const saved = localStorage.getItem(KEY);
+  try {
+    state = { answers: {}, cursor: 0, annotator: "", exported: null }; $("showSys").checked = true;
+    $("autoplay").checked = false; go(0, false);
+    ok("items", ITEMS.length > 0);
+    ok("hidden_before_answer", $("reveal").textContent === "");
+    const first = ITEMS[0], keys = names(first)[0];
+    press("1");
+    ok("key_1_names_first_roster_entry", keys.length === 0 || (state.answers[first.id] && state.answers[first.id].answer === "name:" + keys[0]));
+    ok("advanced_after_answer", ITEMS.length < 2 || cur === 1);
+    press("g"); press("o"); press("u"); press("n");
+    const codes = ITEMS.slice(1, 5).map((it) => state.answers[it.id] && state.answers[it.id].answer);
+    ok("letter_keys", ITEMS.length < 5 || codes.join() === "guest,overlap,unsure,nospeech");
+    go(0, false);
+    ok("revealed_after_answer", $("reveal").textContent.indexOf(first.system) >= 0);
+    press("g");
+    ok("changed_after_reveal_flag", !!state.answers[first.id].changed_after_reveal);
+    const stored = JSON.parse(localStorage.getItem(KEY));
+    ok("localStorage_roundtrip", stored && Object.keys(stored.answers).length === Math.min(5, ITEMS.length));
+    const ex = buildExport();
+    ok("export_shape", ex.type === "speaker-audit-answers" && ex.audit_id === DATA.audit_id && ex.n_answered === Math.min(5, ITEMS.length));
+    const loaded = await new Promise((res) => {
+      const t = setTimeout(() => res(null), 4000);
+      player.addEventListener("loadedmetadata", () => { clearTimeout(t); res(player.duration); }, { once: true });
+      player.addEventListener("error", () => { clearTimeout(t); res(-1); }, { once: true });
+      player.src = first.clip; player.load();
+    });
+    out.audio_duration = loaded;
+    ok("audio_metadata_matches_clip", loaded > 0 && Math.abs(loaded - first.dur) < 0.05);
+  } catch (e) { out.errors.push("exception: " + e.message); }
+  finally {
+    if (saved === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, saved);
+    state = loadState();
+  }
+  out.pass = out.errors.length === 0;
+  $("selftest").textContent = "SELFTEST " + JSON.stringify(out);
+}
+
+$("auditId").textContent = "audit " + DATA.audit_id;
+$("annotator").value = state.annotator || "";
+$("annotator").oninput = (e) => { state.annotator = e.target.value.trim(); save(); };
+$("showSys").onchange = () => renderReveal(ITEMS[cur]);
+$("export").onclick = doExport;
+$("importBtn").onclick = () => $("importFile").click();
+$("importFile").onchange = (e) => { if (e.target.files[0]) doImport(e.target.files[0]); e.target.value = ""; };
+$("play").onclick = togglePlay;
+$("replay").onclick = () => play(0);
+$("targetOnly").onclick = targetOnly;
+$("prev").onclick = () => go(cur - 1, $("autoplay").checked);
+$("next").onclick = () => go(cur + 1, $("autoplay").checked);
+$("bar").onclick = (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  play(Math.max(0, (e.clientX - r.left) / r.width) * (ITEMS[cur].dur || 0));
+};
+player.addEventListener("ended", () => { stopAt = null; });
+document.addEventListener("keydown", onKey);
+document.addEventListener("click", (e) => {     // keep Space/Enter for the shortcuts, not the last-clicked button
+  const b = e.target.closest && e.target.closest("button"); if (b) b.blur();
+});
+if (ITEMS.length) { go(cur, false); requestAnimationFrame(tick); }
+else $("itemTitle").textContent = "No items in this audit.";
+if (location.hash === "#selftest") selftest();
+</script>
+</body>
+</html>

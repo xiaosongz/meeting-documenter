@@ -17,6 +17,9 @@ Usage:
     identify_speakers.py calibrate [--model-id ID] [--dry-run] [--json out.json|-]
     identify_speakers.py list [--json]
     identify_speakers.py forget --name "Canonical Name" --yes
+    identify_speakers.py audit sample --input X.m4a X.timeline.json [--input …] --out DIR
+        [--n 300] [--seed 0] [--pair "Alice Example|Bob Example"] [--channel phone]
+    identify_speakers.py audit score --manifest DIR/manifest.json --answers answers.json
 
 Store: $VOICEPRINT_DIR (default ~/.local/share/meeting-documenter/voiceprints),
 never inside the notes vault or this clone. `identify` is a graceful no-op
@@ -925,6 +928,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name", required=True)
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_forget)
+
+    from voiceprint import audit as vp_audit  # stdlib at import; clip rendering imports numpy lazily
+    vp_audit.add_cli(sub)
     return ap
 
 
