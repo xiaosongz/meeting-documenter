@@ -1,12 +1,12 @@
 # meeting-documenter
 
-A [Claude Code](https://claude.com/claude-code) skill that turns a meeting recording or existing transcript into structured, linked notes: a summary, supported action items, a daily-note row, and project references. Release **0.8.0-beta.1** adds an optional, advisory [voiceprint speaker-ID](#voiceprint-speaker-id-beta) check on top of AssemblyAI diarization; 0.7.0 added AssemblyAI transcription, explicit model/language controls, provenance, and stronger source-fidelity checks. See the [changelog](CHANGELOG.md).
+A [Claude Code](https://claude.com/claude-code) skill that turns a meeting recording or existing transcript into structured, linked notes: a summary, supported action items, a daily-note row, and project references. The next release adds optional, local [known-speaker tracking](#who-speaks-when-local-speaker-tracking-beta): who speaks when, from voiceprints of consenting people, with no speaker embeddings in the cloud. Release **0.8.0-beta.1** added an advisory voiceprint check on top of AssemblyAI diarization; 0.7.0 added AssemblyAI transcription, explicit model/language controls, provenance, and stronger source-fidelity checks. See the [changelog](CHANGELOG.md).
 
 ## What it does
 
 1. Resolves metadata and speaker names using confirmed context and your private registries.
 2. Transcribes audio with **AssemblyAI by default** (`universal-3-5-pro`), or **Gemini on request** (`gemini-2.5-flash`). Gemini includes audio preparation, silence-aware chunking, and truncation retries.
-3. Reviews anonymous speaker clusters or generated names, preserving unresolved identities. Optionally compares clusters with locally stored voiceprints of consenting people as advisory evidence.
+3. Reviews anonymous speaker clusters or generated names, preserving unresolved identities. Optionally tracks who speaks when on your machine from locally stored voiceprints of consenting people, marking weak evidence as uncertain rather than guessing.
 4. Creates a source-linked summary with actual decisions and explicit assignments still open at meeting end; preserves stated deadline wording.
 5. Updates the meeting date's daily note and confirmed project references using your link style and folder conventions.
 6. Creates a named OGG archive after title confirmation, and can preserve the original in your configured backup directory.
@@ -113,7 +113,8 @@ Set these in the selected trusted config or shell environment:
 | `ASSEMBLYAI_API_KEY` | required for AssemblyAI | Default backend credential |
 | `GOOGLE_API_KEY` | required for Gemini | Opt-in credential; `GEMINI_API_KEY` also accepted |
 | `MEETING_DOCUMENTER_VOICEPRINT` | unset | `1` installs optional voiceprint dependencies |
-| `MEETING_DOCUMENTER_LOCAL_SPEAKERS` | unset | Experimental: `1` requests AssemblyAI words only (no cloud diarization) and writes a `.words.json` sidecar |
+| `MEETING_DOCUMENTER_LOCAL_SPEAKERS` | unset (off) | Beta: `1` turns on local speaker tracking for AssemblyAI runs, `0` turns it off |
+| `MEETING_DOCUMENTER_TIMELINE_DIR` | `~/.local/share/meeting-documenter/timelines` | Private speaker timelines (names and times); never inside notes |
 | `VOICEPRINT_DIR` | `~/.local/share/meeting-documenter/voiceprints` | Voiceprint store (biometric) |
 | `VOICEPRINT_MODEL_DIR` | `~/.cache/meeting-documenter/models` | Voiceprint model code and weights |
 | `VOICEPRINT_FORBIDDEN_ROOTS` | unset | Extra `:`-separated directories the store must never be inside |
@@ -121,15 +122,34 @@ Set these in the selected trusted config or shell environment:
 
 The agent resolves directory defaults and conventions during the workflow. `LINK_STYLE` controls agent-authored summary, daily-note, project-reference, and recording links. The Python pipeline initially writes the transcript's `source:` as a bare path; the agent rewrites it after verifying the named archive.
 
-## Voiceprint speaker ID (beta)
+## Who speaks when: local speaker tracking (beta)
 
-AssemblyAI labels speakers as anonymous clusters (`Speaker A`, `Speaker B`). The optional voiceprint check compares each cluster's voice with locally enrolled voiceprints and proposes who it sounds like. It is **advisory only**:
+AssemblyAI's own diarization gives anonymous clusters (`Speaker A`, `Speaker B`) that can split or merge people. With `--local-speakers`, AssemblyAI transcribes **words only** (`speaker_labels=false`, so it creates no speaker embeddings), and this machine works out who speaks at each moment from the enrolled voiceprints of the meeting's attendees:
 
-- AssemblyAI remains the diarizer; voiceprints never split, merge, or rename clusters.
-- A proposal is evidence to reconcile with the attendee roster and transcript content, never a decision. Voice/content disagreement means the agent asks you.
-- Below threshold, not enrolled, or too little speech → the cluster stays `Speaker X`.
-- Without calibration on your own data, every proposal is capped at `low` confidence, so voice alone never names anyone.
-- With no dependencies, models, or voiceprints, the check is a no-op that exits 0 without importing torch; transcription never depends on it.
+```text
+**[00:00] Alice Example:** Let's start with the release checklist.
+**[00:04] Bob Example:** The build is green since this morning.
+**[00:07] Guest 1:** I can take the documentation part.
+**[00:09] Alice Example or Bob Example (uncertain):** Sounds good.
+```
+
+- **Pipeline.** Nemotron 3 Diarization speaker slots → clean-speech units → ReDimNet2 voice embeddings → calibrated scores against the roster → an HMM per slot over the roster plus "unknown" → words attributed to the resulting timeline. It runs in a child process while AssemblyAI transcribes (about 1 min of compute per hour of audio on an Apple M4 Max).
+- **Unknown beats wrong.** Weak or contradictory evidence becomes `A or B (uncertain)`; unenrolled voices become `Guest n`; unmatched speech is `Unknown speaker`. The transcript header lists these turns for a quick spot-check, and the agent asks you when a name conflicts with the content.
+- **Safe fallback.** A readiness check runs before anything is uploaded. Without the dependencies, models, enrolled voiceprints, or your own calibration, the run uses AssemblyAI diarization as before and the transcript header says why.
+- **Private outputs.** The speaker timeline (names and times) goes to `MEETING_DOCUMENTER_TIMELINE_DIR`, never into your notes; the `.words.json` sidecar next to the transcript holds text and timing only.
+- **Default.** Off until you set `MEETING_DOCUMENTER_LOCAL_SPEAKERS=1` or pass `--local-speakers`. Maintainers switch the default with `LOCAL_SPEAKERS_DEFAULT` in `scripts/transcribe_pipeline.py`.
+
+**Public benchmark** (cross-session enrollment: each person is enrolled only from other meetings; identification error rate, IER, at collar 0; lower is better; details in [bench/README.md](bench/README.md)):
+
+| | AMI test (16 meetings, far-field) | AISHELL-4 eval (20 sessions, leave-one-group-out) |
+|---|---|---|
+| Local tracker (this release) | **20.9 %** | **12.6 %** |
+| Diarize, then identify each cluster (B1) | 23.3 % | 20.5 % |
+| Sliding windows + argmax (B0) | 37.3 % | 25.3 % |
+| Speech ≥ 3 s the tracker names that gets the right name | 97.9 % | 96.4 % |
+| Unenrolled speech given an enrolled name (false names) | 3.0 % | 5.8 % |
+
+Most of the remaining AMI error is missed speech at turn edges, not wrong names. Nemotron 3's AMI training data may overlap the AMI test set, so treat the AMI numbers as optimistic; AISHELL-4 is the cleaner evidence.
 
 **Setup.**
 
@@ -137,30 +157,35 @@ AssemblyAI labels speakers as anonymous clusters (`Speaker A`, `Speaker B`). The
 echo 'MEETING_DOCUMENTER_VOICEPRINT=1' >> .env         # opt in; installs torch + sherpa-onnx (large)
 ./scripts/transcribe.sh --help                         # bootstraps .venv with the optional deps
 .venv/bin/python scripts/voiceprint/fetch_models.py    # pinned, sha256-verified models → VOICEPRINT_MODEL_DIR
+.venv/bin/python scripts/voiceprint/fetch_models.py nemotron3   # needs a transformers build with Nemotron 3 (> 5.17.0)
 ```
 
-The default embedder is ReDimNet2 (torch; CPU, or Apple-silicon MPS after a CPU parity self-test). ERes2NetV2, CAM++, and WeSpeaker ResNet34 ONNX models run through sherpa-onnx on CPU, and Silero VAD v5 filters non-speech such as ringtones or hold music. Models are downloaded from their upstream releases, not stored in this repository; check each model's license before use.
+ReDimNet2 runs on CPU, or on Apple-silicon MPS after a CPU parity self-test; Nemotron 3 Diarization (OpenMDW-1.1) runs on CPU. The optional ERes2NetV2, CAM++, and WeSpeaker ResNet34 ONNX models run through sherpa-onnx, and Silero VAD v5 filters non-speech such as ringtones or hold music. Models are downloaded from their upstream releases, not stored in this repository; check each model's license before use.
 
 **Use.** `scripts/identify-speakers.sh` loads the same trusted config as `transcribe.sh`:
 
 ```bash
-# Step 2.5a: score the clusters of a new AssemblyAI transcript (uses its .utterances.json sidecar)
-./scripts/identify-speakers.sh identify --audio team-sync.m4a \
-  --utterances "Team-Sync-Transcript.utterances.json" --roster "Alice Example,Bob Example"
+# Transcribe with local speaker tracking for the confirmed attendees
+./scripts/transcribe.sh team-sync.m4a --local-speakers --roster "Alice Example,Bob Example" \
+  --output "2026-01-15-1000 Team-Sync-Transcript.md"
 
-# Step 8c: after names are confirmed, enroll a consenting person's cluster
-./scripts/identify-speakers.sh enroll --audio team-sync.m4a \
-  --utterances "Team-Sync-Transcript.utterances.json" --name "Alice Example" --cluster A
+# After the names are confirmed, enroll consenting speakers from the timeline (turns ≥ 3 s)
+TL=~/.local/share/meeting-documenter/timelines/"2026-01-15-1000 Team-Sync-Transcript.timeline.json"
+./scripts/identify-speakers.sh enroll --audio team-sync.m4a --timeline "$TL" --name "Alice Example"
+./scripts/identify-speakers.sh enroll --audio team-sync.m4a --timeline "$TL" \
+  --speaker GUEST_1 --name "Carol Example"            # a guest you identified
 
-# After a few meetings per person: derive thresholds from your own enrolled data
-./scripts/identify-speakers.sh calibrate --dry-run
-./scripts/identify-speakers.sh calibrate
+# After a few meetings per person: fit the tracker's calibration on your own data, then check
+./scripts/identify-speakers.sh track-calibrate
+./scripts/identify-speakers.sh track-check --roster "Alice Example,Bob Example"
 
 ./scripts/identify-speakers.sh list
 ./scripts/identify-speakers.sh forget --name "Alice Example" --yes
 ```
 
-`calibrate` needs no audio: it rebuilds enrollment leave-one-meeting-out from the stored vectors, sets the open-set threshold τ at the 99th percentile of scores for voices that are not enrolled (about 1% false accepts on your data), τ_low at the 95th, and the swap-margin/gap rules from the 5th percentile of true-speaker trials. It refuses to write anything with fewer than 50 such scores, prints a nested (held-out-meeting) error estimate, and records the clip configuration so later runs reproduce the same clips. Details: [BACKENDS.md § Voiceprint check](references/BACKENDS.md#voiceprint-check-step-25a-optional-beta).
+The first voiceprints come from a diarized run: map AssemblyAI's clusters to names as usual, then `enroll --utterances X.utterances.json --cluster A --name "Alice Example"`. `track-calibrate` needs no audio: it refits the tracker's duration-aware score calibration leave-one-meeting-out on the stored vectors. Until it has run, the readiness check reports `no_calibration` and transcription falls back to diarization.
+
+**Legacy cluster check.** The earlier advisory check (`identify` on a diarized run's `.utterances.json` sidecar, thresholds from `calibrate`) still works and is kept as a fallback and for comparison. It only proposes a name per AssemblyAI cluster and never renames anything. Details: [BACKENDS.md § Legacy voiceprint check](references/BACKENDS.md#legacy-voiceprint-check-cluster-path).
 
 **Listening audit.** To measure accuracy on your own meetings without annotating whole timelines, `audit sample` draws about 300 short windows from speaker timelines (stratified by turn duration, system confidence and channel; short turns, UNCERTAIN regions and switches between a close pair are oversampled), renders each with ±2 s of context and a soft tone before and after the span to judge, and writes an offline answering page. About an hour of listening with the keyboard gives per-stratum accuracy with 95 % confidence intervals:
 
@@ -173,14 +198,14 @@ The default embedder is ReDimNet2 (torch; CPU, or Apple-silicon MPS after a CPU 
 
 The clips, page and reports contain your recordings and names, so the output directory gets the same guard as the voiceprint store (never inside the notes vault or this clone).
 
-**Limits.** Validated on the maintainer's private meetings; a public benchmark is pending (see the [roadmap](CONTRIBUTING.md#roadmap)). Accuracy drops with short turns (under about 8 s of net speech per cluster), phone or heavily compressed audio, overlapping speech, similar voices, and people with little enrolled speech. The utterances sidecar contains meeting text. Voiceprints from different models are not comparable; changing models means re-enrolling.
+**Limits.** The public benchmark above is far-field meeting audio; accuracy on your own meetings is measured with the listening audit. Accuracy drops for turns under about a second, phone or heavily compressed audio, overlapping speech, similar voices, and people with little enrolled speech. The boundary model tracks at most 8 speakers per recording; the `seg3` fallback boundary names far more strangers and is not used unless you ask for it. The words and utterances sidecars and the timeline contain meeting content. Voiceprints from different models are not comparable; changing models means re-enrolling.
 
 ## Privacy and consent for voiceprints
 
 Voiceprints are **biometric data**. Speaker embeddings are designed to recognise a person by voice, so treat the store like other sensitive personal data:
 
 - **Consent first.** Enroll only people who agreed to voiceprint enrollment, and record when (for example in the registry's `voiceprint:` metadata). The agent must ask before every enrollment; never enroll someone from a recording they did not know would be used this way.
-- **Local only.** The store lives in `VOICEPRINT_DIR` (default `~/.local/share/meeting-documenter/voiceprints`, mode 700; database and calibration mode 600). The CLI refuses a store inside `VAULT_PATH`, `MEETING_NOTES_DIR`, `VOICEPRINT_FORBIDDEN_ROOTS`, any Obsidian vault, or this clone, so vectors are not synced with notes or committed. Nothing is uploaded; AssemblyAI receives only the audio it already transcribes.
+- **Local only.** The store lives in `VOICEPRINT_DIR` (default `~/.local/share/meeting-documenter/voiceprints`, mode 700; database and calibration mode 600). The CLI refuses a store inside `VAULT_PATH`, `MEETING_NOTES_DIR`, `VOICEPRINT_FORBIDDEN_ROOTS`, any Obsidian vault, or this clone, so vectors are not synced with notes or committed. Nothing is uploaded; AssemblyAI receives only the audio it already transcribes, and with local speaker tracking it is asked for words only, so it creates no speaker embeddings. Speaker timelines stay in `MEETING_DOCUMENTER_TIMELINE_DIR` under the same notes guard.
 - **Deletion.** `forget --name ... --yes` deletes a person's vectors from every model and vacuums the database. Delete the whole store directory to remove everything.
 - **Law.** Some jurisdictions regulate biometric identifiers specifically, for example the Illinois Biometric Information Privacy Act (BIPA, written notice and consent, retention schedule) and the EU/UK GDPR (Article 9 special-category data when used to identify a person). Workplace recording and consent rules also vary. This is informational, not legal advice; check what applies to you and to the people you record.
 
@@ -194,8 +219,9 @@ scripts/compress-audio.sh        Named OGG archive and verification
 scripts/split-audio.sh           Silence-aware splitting
 scripts/cleanup-source-audio.sh  Original recording backup
 scripts/identify-speakers.sh     Optional voiceprint CLI wrapper (guarded config loading)
-scripts/identify_speakers.py     Voiceprint identify / enroll / calibrate / list / forget / audit
-scripts/voiceprint/              Embedders, clip selection, scoring, store, calibration, tests
+scripts/identify_speakers.py     Voiceprints: track / track-check / enroll / track-calibrate / list / forget / audit (legacy identify / calibrate)
+scripts/voiceprint/              Tracker, boundary layer, timeline, word attribution, embedders, store, calibration, audit, tests
+bench/                           Public speaker-tracking benchmark (AMI, AISHELL-4) and baselines
 scripts/dev/check_pii.py         PII/private-file guard (CI and pre-commit hook)
 .githooks/pre-commit             Local hook running the PII guard on staged changes
 references/ONBOARDING_PROMPT.md  Guided setup

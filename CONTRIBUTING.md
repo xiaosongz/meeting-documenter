@@ -42,7 +42,7 @@ The hook scans staged additions and file names. It cannot remove data that was a
 
 - Keep changes focused; update `CHANGELOG.md` under an "Unreleased" heading.
 - Explain any change to identity handling, thresholds, or privacy guards, and add a regression test.
-- Voiceprint output stays advisory: AssemblyAI remains the diarizer, below-threshold or unenrolled speakers stay `Speaker X`, voice/content disagreement goes to the user, and the no-dependency path exits 0 without importing torch.
+- A wrong name is worse than no name: weak or contradictory voice evidence becomes `UNCERTAIN(A|B)`, `GUEST_n`, or `UNKNOWN`, never a forced name; voice/content disagreement goes to the user; local speaker tracking falls back to AssemblyAI diarization, with a visible warning, whenever it is not set up; and the no-dependency path exits 0 without importing torch.
 
 ## Roadmap
 

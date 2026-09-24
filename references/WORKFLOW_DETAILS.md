@@ -8,7 +8,7 @@ description: "Edge cases, conditional branches, and fast-paths for the meeting d
 
 When starting from an existing transcript, no transcription service or audio tools are needed.
 
-**N/A:** Steps 1 (audio prep), 2 (transcription), 2.5 (cluster mapping and voiceprint check from a new backend run), 2b (archive), 8b (source backup), and 8c (voiceprint enrollment). Mark their audio-only checklist items N/A.
+**N/A:** Steps 1 (audio prep), 2 (transcription), 2.5 (local speaker tracking or cluster mapping from a new backend run), 2b (archive), 8b (source backup), and 8c (voiceprint enrollment). Mark their audio-only checklist items N/A.
 
 **Still required:**
 
@@ -84,6 +84,21 @@ Transcription environment is managed by `scripts/transcribe.sh`: guarded configu
 ### Transcript Frontmatter Update
 
 `transcribe_pipeline.py` emits transcript metadata and backend/model provenance. Review the title/date/source fields against the confirmed meeting; preserve requested versus returned model/language details, including separate AAI Requested Language and AAI Detected Language fields. After a named archive is verified, rewrite `source:` in the configured `LINK_STYLE`. See `BACKENDS.md` for cluster mapping and provenance.
+
+### Local Speaker Tracking Outcomes (Step 2.5a)
+
+With `--local-speakers`, check the transcript header before Step 2.5:
+
+| Header shows | Meaning | Continue with |
+|---|---|---|
+| `Local Speaker Tracking:` line, names in the body | Tracked locally; the timeline was written to `MEETING_DOCUMENTER_TIMELINE_DIR` | 2.5b review, then the Speaker review timestamps |
+| `[!warning] Local speaker tracking was requested but is unavailable (...)` and `Speaker A/B` | Readiness check failed before upload; AssemblyAI diarized as before | 2.5c cluster mapping; fix the named reason (`no_calibration` → `track-calibrate`, `no_boundary` → fetch nemotron3, `roster_not_enrolled` → check the roster spelling) for next time |
+| `[!warning] Local speaker tracking failed (...)`, unlabelled paragraphs | Tracking failed or timed out after transcription; words sidecar kept | Map speakers from content (2.5c rules); re-run the transcription if speaker attribution matters |
+
+- The review list shows at most 40 turns; the timeline holds all of them.
+- Meetings with more than 8 speakers exceed the nemotron3 boundary model; prefer `--no-local-speakers` for them.
+- Mandarin: AssemblyAI tokens can absorb pauses and cross a speaker change. A turn boundary that looks one or two words late is a known limitation, not a reason to rename a speaker.
+- Renaming the transcript later (Step 3b) does not rename its timeline or words sidecar; they keep the original stem. Rename them alongside, or note the original stem, before Step 8c enrollment.
 
 ## Step 3: No Project Detected
 

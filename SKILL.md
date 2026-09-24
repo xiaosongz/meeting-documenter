@@ -73,7 +73,8 @@ fi
 | `ASSEMBLYAI_API_KEY` | required for AssemblyAI | Default transcription backend |
 | `GOOGLE_API_KEY` | required for Gemini | Opt-in backend; `GEMINI_API_KEY` is also accepted |
 | `MEETING_DOCUMENTER_VOICEPRINT` | unset | `1` installs the optional voiceprint dependencies on the next `transcribe.sh` run |
-| `MEETING_DOCUMENTER_LOCAL_SPEAKERS` | unset | Experimental. `1` (or `--local-speakers`) runs AssemblyAI with `speaker_labels=false` and writes `<transcript stem>.words.json`; the transcript has unlabelled paragraphs until local speaker tracking lands. Leave unset in normal use |
+| `MEETING_DOCUMENTER_LOCAL_SPEAKERS` | unset (off) | Beta. `1` turns on local speaker tracking (Step 2.5a) for every AssemblyAI run, `0` turns it off; `--local-speakers` / `--no-local-speakers` override per run |
+| `MEETING_DOCUMENTER_TIMELINE_DIR` | `~/.local/share/meeting-documenter/timelines` | Private speaker timelines from local tracking; refused inside notes roots, Obsidian vaults, or this clone |
 | `VOICEPRINT_DIR` | `~/.local/share/meeting-documenter/voiceprints` | Voiceprint store (biometric); refused inside notes roots, Obsidian vaults, or this clone |
 | `VOICEPRINT_MODEL_DIR` | `~/.cache/meeting-documenter/models` | Voiceprint model code and weights |
 | `VOICEPRINT_FORBIDDEN_ROOTS` | unset | Extra `:`-separated directories the store must never be inside |
@@ -87,7 +88,7 @@ Runtime registries are private and gitignored: `references/KNOWN_SPEAKERS.yaml` 
 - [ ] Step 0b: Resolve names → canonical names and uncertainties
 - [ ] Step 1: Audio inspection → Gemini prepares working copies when needed
 - [ ] Step 2: Transcribe → explicit transcript output path
-- [ ] Step 2.5: AssemblyAI clusters → advisory voiceprint check (2.5a), then supported names or unresolved labels
+- [ ] Step 2.5: Speaker names → local tracking review (2.5a/b) or cluster mapping (2.5c); unresolved labels stay
 - [ ] Step 3: Confirm project and final title
 - [ ] Step 2b: Named recording archive → after title confirmation
 - [ ] Step 4: Summary → decisions and outstanding, explicitly assigned tasks
@@ -131,7 +132,7 @@ AssemblyAI is the default backend, with `universal-3-5-pro` as the default speec
   --output "${MEETING_RAW_DIR}/YYYY-MM-DD-HHMM Title-Transcript.md"
 ```
 
-When known and appropriate, add `--speakers-expected 2`, `--keyterms-file "/path/to/run/keyterms.txt"`, or `--language-code en`. `--aai-speech-models universal-3-5-pro` makes model selection explicit; multiple models form an ordered request list. Omit optional hints when unknown. `--aai-poll-timeout 3600` sets the maximum job-polling time in seconds (default 3600; positive finite value). `--description "..."` sets the frontmatter description.
+With voiceprints set up, add `--local-speakers --roster "Confirmed Name A,Confirmed Name B"` (Step 2.5a). When known and appropriate, add `--speakers-expected 2`, `--keyterms-file "/path/to/run/keyterms.txt"`, or `--language-code en`. `--aai-speech-models universal-3-5-pro` makes model selection explicit; multiple models form an ordered request list. Omit optional hints when unknown. `--aai-poll-timeout 3600` sets the maximum job-polling time in seconds (default 3600; positive finite value). `--description "..."` sets the frontmatter description.
 
 Gemini is opt-in:
 
@@ -150,23 +151,24 @@ The pipeline emits backend/model provenance with the transcript. Preserve the di
 
 **Archival is off by default in this command.** `--no-archive` remains accepted for compatibility. `--archive-dir <directory>` explicitly opts into built-in archival; the documented meeting workflow instead uses Step 2b after the final title is confirmed. Do not run both archival paths for the same recording. Known archive destination collisions are rejected before provider work; a later archive failure stops the run while preserving any completed transcript and the source.
 
-## Step 2.5: Map AssemblyAI clusters to names
+## Step 2.5: Speaker names
 
-**2.5a Voiceprint check (optional, advisory, beta).** The AssemblyAI path writes `<transcript stem>.utterances.json` next to the transcript. If the user has set up voiceprints, score the clusters against them before mapping:
+**2.5a Local speaker tracking (optional, beta; AssemblyAI; voiceprints set up).** Run Step 2 with `--local-speakers` (or `MEETING_DOCUMENTER_LOCAL_SPEAKERS=1`) and the Step 0b roster as `--roster "A,B"` (or a context file with a `Possible speakers:` list). AssemblyAI then returns words only (`speaker_labels=false`, so no cloud voice embeddings), `identify_speakers.py track` works out locally who speaks when from the enrolled voiceprints, and each word takes the speaker of its time span. The transcript labels turns with names, `Guest n` (a consistent unenrolled voice), `A or B (uncertain)`, or `Unknown speaker`, and its header lists those turns under **Speaker review**. The private speaker timeline goes to `MEETING_DOCUMENTER_TIMELINE_DIR`, never into notes; the `.words.json` sidecar sits next to the transcript.
 
-```bash
-"${SKILL_DIR}/scripts/identify-speakers.sh" identify \
-  --audio "/path/to/audio.m4a" \
-  --utterances "${MEETING_RAW_DIR}/YYYY-MM-DD-HHMM Title-Transcript.utterances.json" \
-  --roster "Confirmed Name A,Confirmed Name B" \
-  --json "/path/to/run/voiceprint-identify.json"
-```
+A readiness check runs before upload. Without the voiceprint dependencies, the nemotron3 boundary model, enrolled voiceprints, the store's track calibration (`track-calibrate`), or any enrolled roster member, the run uses AssemblyAI diarization and the header starts with a `[!warning]` naming the reason: continue with 2.5c. If tracking fails after transcription, the transcript is unlabelled with a warning; map speakers from content (2.5c) or re-run. Setup and flags: `references/BACKENDS.md § Local speaker tracking`.
 
-It proposes a cluster → name mapping with `high`/`low`/`unknown` confidence and never renames anything. When no voiceprints, dependencies, or models exist it reports `no_voiceprints`, `no_deps`, `no_embedder`, or `error` and exits 0: continue with content-only mapping. Without `calibration.json` every proposal is capped at `low`. Voice evidence never overrides content: a `high` proposal that agrees with the content mapping corroborates it; a disagreement, or a `label_check` of `inversion`/`conflict`, means **stop and ask the user**; `low`/`unknown`, an insufficient cluster, or a person not enrolled means keep `Speaker X` unless content settles it. Details: `references/BACKENDS.md § Voiceprint check`.
+**2.5b Review tracked names.** Voice evidence is strong but not proof:
 
-**2.5b Content mapping.** AssemblyAI's `Speaker A/B/C` labels are diarization clusters, not verified identities. Read the transcript and map only when self-identification, direct address, or confirmed meeting context supports it. Check against the attendee roster, but do not infer identity from cluster order, count, or apparent role alone.
+1. Check each name against the roster and content (self-identification, direct address, stated roles). A name that the content contradicts means **stop and ask the user**; never overwrite either side silently.
+2. Give the user the Speaker review timestamps to spot-check by ear, prioritising turns that carry decisions or tasks. Offer short clips cut to a temporary directory outside notes.
+3. Resolve `A or B (uncertain)` only from content evidence or the user's ear; otherwise keep it uncertain in the summary. Name a `Guest n` only when content or the user establishes who it is. `Unknown speaker` stays unless the same evidence settles it.
+4. Record every reassignment (timestamp, new label, evidence) in Diarization Notes. Do not edit the timeline file.
+
+**2.5c Cluster mapping (default path and fallback).** AssemblyAI's `Speaker A/B/C` labels are diarization clusters, not verified identities. Read the transcript and map only when self-identification, direct address, or confirmed meeting context supports it. Check against the attendee roster, but do not infer identity from cluster order, count, or apparent role alone.
 
 Clusters can split a person or merge several people. Retain uncertain labels and add Diarization Notes describing unresolved mappings; ask the user or review the audio for material ambiguity. Preserve original cluster labels in the mapping notes. Gemini's generated names also require verification. See `references/BACKENDS.md`.
+
+**Legacy voiceprint check (cluster path).** The older cluster-level check still works on the `<transcript stem>.utterances.json` sidecar of a diarized run; it is kept as a fallback and for comparison. It only proposes names and never renames anything: `identify-speakers.sh identify --audio ... --utterances ... --roster "..." --json ...`. A `high` proposal that agrees with content corroborates it; a disagreement or a `label_check` of `inversion`/`conflict` means stop and ask. Details: `references/BACKENDS.md § Legacy voiceprint check`.
 
 ## Step 3: Confirm project and title
 
@@ -208,11 +210,11 @@ Create `YYYY-MM-DD-HHMM Title.md` with links to the canonical summary/transcript
 
 Read all outputs and apply `references/QUALITY_CHECKLIST.md`. Review suspicious silence, repeating dialogue, frozen timestamps, and speaker ambiguities. Timestamp coverage is a warning signal, not proof of completeness. Do not summarize corrupted stretches as fact or label unverified audio as checked.
 
-Verify files exist, metadata is valid, links resolve in the chosen style, and decisions/tasks agree across summary, daily note, and project references. When Step 2.5a ran, the final mapping must not contradict a `high` voice proposal or an `inversion`/`conflict` label check unless the user resolved it. Complete all applicable checks before reporting success; mark audio-only checks N/A for existing transcripts.
+Verify files exist, metadata is valid, links resolve in the chosen style, and decisions/tasks agree across summary, daily note, and project references. After local tracking, every name the content contradicted was resolved by the user, and uncertain or guest labels were not turned into names without evidence. After the legacy cluster check, the final mapping must not contradict a `high` voice proposal or an `inversion`/`conflict` label check unless the user resolved it. Complete all applicable checks before reporting success; mark audio-only checks N/A for existing transcripts.
 
 ## Step 8: Cleanup and source preservation
 
-**8a.** Remove only this run's known temporary context/keyterms, voiceprint-identify JSON, and working files. They may contain private meeting data. Check for this run's abandoned child process/temp directory if interrupted; do not broadly delete other runs' files. Keep the transcript (and its utterances or words sidecar), final archive, and original recording.
+**8a.** Remove only this run's known temporary context/keyterms, voiceprint-identify JSON, and working files. They may contain private meeting data. Check for this run's abandoned child process/temp directory if interrupted; do not broadly delete other runs' files. Keep the transcript (and its utterances or words sidecar), the speaker timeline, final archive, and original recording.
 
 **8b (audio only).** After a verified archive and completed output checks, use the source-backup helper when the user's workflow authorizes moving the original:
 
@@ -228,16 +230,21 @@ The helper verifies the archive and moves the original to `${MEETING_AUDIO_BACKU
 
 The original preserves the received recording without another lossy re-encode; an M4A or MP3 source is not necessarily lossless. Never replace the original with the compressed archive.
 
-**8c (optional, AssemblyAI audio, voiceprints set up).** After the user has confirmed the names, write them into the sidecar's `speaker_map` (for example `{"A": "Alice Example"}`) and offer to enroll confirmed clusters of people who **consented** to voiceprint enrollment. Voiceprints are biometric data: ask before enrolling anyone, never enroll unconfirmed or disputed clusters, and store vectors only in `VOICEPRINT_DIR`, never in notes. One call per confirmed cluster:
+**8c (optional, AssemblyAI audio, voiceprints set up).** After the user has confirmed the names, offer to enroll confirmed speakers who **consented** to voiceprint enrollment. Voiceprints are biometric data: ask before enrolling anyone, never enroll unconfirmed or disputed turns, and store vectors only in `VOICEPRINT_DIR`, never in notes. After local tracking, enroll from the timeline; only turns of at least 3 s are used:
 
 ```bash
-"${SKILL_DIR}/scripts/identify-speakers.sh" enroll \
-  --audio "/path/to/audio.m4a" \
-  --utterances "${MEETING_RAW_DIR}/YYYY-MM-DD-HHMM Title-Transcript.utterances.json" \
-  --name "Confirmed Canonical Name" --cluster A --source confirmed_meeting
+TL="${MEETING_DOCUMENTER_TIMELINE_DIR:-$HOME/.local/share/meeting-documenter/timelines}/YYYY-MM-DD-HHMM Title-Transcript.timeline.json"
+# a confirmed name: that name's turns
+"${SKILL_DIR}/scripts/identify-speakers.sh" enroll --audio "/path/to/audio.m4a" --timeline "$TL" \
+  --name "Confirmed Canonical Name" --source confirmed_meeting
+# a guest the user identified: GUEST_1's turns become this person
+"${SKILL_DIR}/scripts/identify-speakers.sh" enroll --audio "/path/to/audio.m4a" --timeline "$TL" \
+  --speaker GUEST_1 --name "Confirmed Canonical Name" --source user_ear
 ```
 
-Enrollment refuses (exit 3) when the clips sound like someone already enrolled, and (exit 4) when its clip config differs from `calibration.json`. Do not pass `--force` without the user. Afterwards update the person's optional `voiceprint:` metadata in the private registry (counts and consent date only, never vectors). See `references/BACKENDS.md § Voiceprint enrollment` for `calibrate`, `list`, and `forget`.
+Add `--spans "03:10-03:40,12:05-12:30"` to restrict enrollment to spans the user confirmed (required for an `UNCERTAIN(A|B)` label). After the cluster path, write the confirmed names into the utterances sidecar's `speaker_map` (for example `{"A": "Alice Example"}`) and enroll per cluster with `--utterances "<...>.utterances.json" --cluster A` instead of `--timeline`.
+
+Enrollment refuses (exit 2) when the timeline or `speaker_map` labels the turns as someone else, (exit 3) when the clips sound like someone already enrolled, and (exit 4) when its clip config differs from `calibration.json`. Do not pass `--force` without the user. Afterwards update the person's optional `voiceprint:` metadata in the private registry (counts and consent date only, never vectors). See `references/BACKENDS.md § Voiceprint enrollment` for `track-calibrate`, `calibrate`, `list`, and `forget`.
 
 ## References and troubleshooting
 
@@ -249,7 +256,7 @@ Enrollment refuses (exit 3) when the clips sound like someone already enrolled, 
 | `references/SUMMARY_FORMAT.md` | Summary and task-fidelity specification |
 | `references/WORKFLOW_DETAILS.md` | Transcript-only path and integration edge cases |
 | `references/QUALITY_CHECKLIST.md` | Source, output, and link verification |
-| `scripts/identify-speakers.sh` | Optional voiceprint identify / enroll / calibrate / list / forget |
+| `scripts/identify-speakers.sh` | Optional voiceprints: track / track-check / enroll / track-calibrate / list / forget (legacy: identify / calibrate) |
 
 - **Missing key:** configure `ASSEMBLYAI_API_KEY` for the default backend, or `GOOGLE_API_KEY`/`GEMINI_API_KEY` for `--backend gemini`, in the selected trusted config or shell environment. Never print key values.
 - **Rejected configuration:** verify file ownership and permissions. Do not bypass the checks by sourcing an unsafe file directly.

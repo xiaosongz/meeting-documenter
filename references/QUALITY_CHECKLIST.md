@@ -32,13 +32,16 @@ Use configured paths, `DAILY_NOTE_PATH_FORMAT`, and `PROJECT_MEETING_SUBDIR` (em
 - [ ] Beginning, middle, and end coverage were reviewed against audio when available; gaps are explained (audio only).
 - [ ] A span of at least 80% of audio duration is treated only as a coarse warning heuristic, never proof of completeness or accuracy.
 
-## Speaker-cluster mapping (Step 2.5 — AssemblyAI only)
+## Speaker names (Step 2.5 — AssemblyAI only)
 
-- [ ] Mappings use explicit dialogue/audio evidence and are checked against the roster.
+- [ ] Local tracking (2.5a): a `[!warning]` fallback or failure callout was kept and the matching path (cluster mapping or content mapping) was followed; the speaker timeline is outside notes.
+- [ ] Tracked names were checked against the roster and content; every contradiction went to the user.
+- [ ] The Speaker review timestamps were offered for spot-checking; `A or B (uncertain)`, `Guest n`, and `Unknown speaker` were not turned into names without content evidence or the user's ear, and reassignments are in Diarization Notes.
+- [ ] Cluster mappings use explicit dialogue/audio evidence and are checked against the roster.
 - [ ] Original clusters and manual mappings/ambiguities are documented in Diarization Notes.
 - [ ] Split/merged clusters were considered; the expected count was not treated as identity proof.
 - [ ] Unresolved labels remain visible. No person was invented to fill a cluster.
-- [ ] If the voiceprint check (2.5a) ran: no name rests on voice alone; every voice/content disagreement or `inversion`/`conflict` label check was resolved by the user; uncalibrated or `low` proposals were not treated as identification.
+- [ ] If the legacy cluster voiceprint check ran: no name rests on voice alone; every voice/content disagreement or `inversion`/`conflict` label check was resolved by the user; uncalibrated or `low` proposals were not treated as identification.
 
 ## Transcript authenticity (Step 7 — audio only)
 
@@ -103,7 +106,7 @@ Generative transcription can produce plausible speech in quiet stretches or repe
 - [ ] Cleanup helper, if used, completed successfully; an existing destination was not assumed to contain this source.
 - [ ] No unrelated same-stem audio was removed as a presumed duplicate.
 - [ ] Final response names the created outputs and any material unresolved identity/content limitation.
-- [ ] Voiceprint enrollment (8c), if any, covered only user-confirmed clusters of people who consented; no vectors, clips, or `calibration.json` were written inside notes or this repository.
+- [ ] Voiceprint enrollment (8c), if any, covered only user-confirmed clusters or timeline turns (≥ 3 s; `--spans` for anything the user confirmed by ear) of people who consented; no vectors, clips, timelines, or `calibration.json` were written inside notes or this repository.
 
 ## Testing repository changes
 
