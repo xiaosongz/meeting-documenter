@@ -1,0 +1,5 @@
+# Benchmark harness (bench/). Scoring needs only pyannote.metrics + numpy.
+# Baseline B0 additionally needs the voiceprint stack: scripts/voiceprint/requirements.txt
+pyannote.metrics>=4.0
+numpy
+soundfile

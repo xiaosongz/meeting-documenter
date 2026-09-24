@@ -23,6 +23,8 @@ jobs:
           # Light voiceprint deps only: no torch, sherpa-onnx or model downloads in CI.
           # Model-dependent voiceprint tests skip cleanly without them.
           python -m pip install google-genai requests numpy scipy pyyaml pytest
+          # Benchmark scoring only; bench tests use synthetic RTTMs, no dataset downloads.
+          python -m pip install -r bench/requirements.txt
       - name: Check shell syntax
         run: |
           for script in scripts/*.sh .githooks/pre-commit; do bash -n "$script"; done
@@ -32,3 +34,7 @@ jobs:
         run: python -B -m unittest discover -s tests -v
       - name: Run voiceprint tests
         run: python -B -m pytest -q -p no:cacheprovider -rs scripts/voiceprint/tests
+      - name: Run benchmark harness tests
+        env:
+          PYANNOTE_METRICS_ENABLED: '0'
+        run: python -B -m pytest -q -p no:cacheprovider -rs bench/tests
