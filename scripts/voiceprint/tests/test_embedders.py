@@ -5,8 +5,11 @@ The end-to-end check uses two synthetic macOS `say` voices, never real recording
 """
 
 import json
+import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -108,3 +111,37 @@ def test_tts_enroll_identify_end_to_end(tmp_path):
     best = {d["cluster"]: d["best"] for d in r["decisions"]}
     assert best == {"A": "Bob Example", "B": "Alice Example"}
     assert all(d["confidence"] != "high" for d in r["decisions"])        # uncalibrated cap
+
+
+def test_bounded_batches_equal_lengths_and_audio_cap():
+    sr = em.SAMPLE_RATE
+    lengths = [2 * sr] * 30 + [sr] * 3 + [70 * sr]
+    batches = em.bounded_batches(lengths)
+    assert sorted(i for b in batches for i in b) == list(range(len(lengths)))
+    for b in batches:
+        assert len({lengths[i] for i in b}) == 1                          # never mixes lengths
+        assert len(b) == 1 or sum(lengths[i] for i in b) <= em.MAX_BATCH_S * sr
+    assert [lengths[b[0]] for b in batches] == sorted(lengths[b[0]] for b in batches)
+    assert [len(b) for b in batches if lengths[b[0]] == 2 * sr] == [24, 6]
+
+
+def test_footprint_readings():
+    from voiceprint import footprint as fp
+    cur, peak = fp.phys_footprint(), fp.peak_footprint()
+    if cur is None:
+        pytest.skip("physical footprint not available on this platform")
+    assert 0 < cur <= peak
+    fp.FootprintGuard(limit_gb=1e6).check()
+    with pytest.raises(fp.FootprintExceeded):
+        fp.FootprintGuard(limit_gb=1e-6).check("test")
+
+
+@pytest.mark.skipif(not os.environ.get("VOICEPRINT_PERF"), reason="set VOICEPRINT_PERF=1 (slow, needs MPS + models)")
+@needs_model
+def test_mps_embedding_footprint_bounded(tmp_path):
+    """Mixed-length input through audio.embed_clips must keep the MPS footprint bounded."""
+    tool = Path(__file__).resolve().parents[1] / "tools" / "perf_embed.py"
+    r = subprocess.run([sys.executable, str(tool), "--device", "mps", "--minutes", "10",
+                        "--max-footprint-gb", "8", "--json", str(tmp_path / "p.json")],
+                       capture_output=True, text=True, timeout=1800)
+    assert r.returncode == 0, r.stdout + r.stderr

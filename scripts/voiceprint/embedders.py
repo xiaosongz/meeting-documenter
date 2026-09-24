@@ -30,6 +30,15 @@ from .config import model_dir
 
 SAMPLE_RATE = 16000
 MIN_SAMPLES = SAMPLE_RATE // 2  # 0.5 s; shorter clips carry too little speaker info
+# Audio per forward pass. The MPS caching allocator keeps buffers for every input shape it
+# has seen, and that memory is invisible to RSS: ReDimNet2 reached a 74-85 GB physical
+# footprint on mixed clip lengths while RSS showed 3-8 GB. Batches are therefore capped at
+# this much audio and the MPS cache is released after each one (9 GB peak, no slowdown).
+MAX_BATCH_S = 48.0
+# PYTORCH_MPS_{HIGH,LOW}_WATERMARK_RATIO defaults, set before the first MPS allocation. The
+# high mark turns runaway growth into an error; the low mark must not exceed it (torch's
+# default low mark on unified memory is 1.4, which fails validation against 0.15).
+MPS_WATERMARKS = {"PYTORCH_MPS_HIGH_WATERMARK_RATIO": "0.15", "PYTORCH_MPS_LOW_WATERMARK_RATIO": "0.1"}
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +218,8 @@ class _ReDimNet2Embedder:
     sample_rate = SAMPLE_RATE
 
     def __init__(self, spec: TorchSpec, device: str):
+        if device == "mps" and "PYTORCH_MPS_HIGH_WATERMARK_RATIO" not in os.environ:
+            os.environ.update(MPS_WATERMARKS)
         import torch  # lazy
 
         if device not in ("cpu", "mps"):
@@ -236,6 +247,7 @@ class _ReDimNet2Embedder:
         self._torch = torch
         self._model = model
         self._device = device
+        self._since_release = 0
         self.name = spec.name
         self.dim = int(ckpt["model_config"]["embed_dim"])
         self.model_id = (f"redimnet2-{spec.model_size}-{spec.dataset}-{spec.train_type}"
@@ -245,7 +257,16 @@ class _ReDimNet2Embedder:
         t = self._torch.from_numpy(batch).to(self._device)
         with self._torch.inference_mode():
             e = self._model(t)
-        return e.float().cpu().numpy()
+        out = e.float().cpu().numpy()
+        if self._device == "mps":
+            # Release the cache once per MAX_BATCH_S of audio, not per call: per-call release
+            # of one-clip forwards cost ~25 % speed for no footprint gain.
+            del t, e
+            self._since_release += batch.size
+            if self._since_release >= MAX_BATCH_S * SAMPLE_RATE:
+                self._torch.mps.empty_cache()
+                self._since_release = 0
+        return out
 
     def embed(self, wave: np.ndarray) -> np.ndarray:
         return _l2(self._forward(_check_wave(wave)[None, :]))[0]
@@ -253,15 +274,26 @@ class _ReDimNet2Embedder:
     def embed_batch(self, waves: list[np.ndarray]) -> np.ndarray:
         # The model z-scores each clip over its own samples and mean-normalizes the
         # log-mel over its own frames, so zero-padding would change embeddings.
-        # Batch only clips of identical length; everything else runs one by one.
+        # Batch only clips of identical length, at most MAX_BATCH_S of audio per pass.
         ws = [_check_wave(w) for w in waves]
         out = np.empty((len(ws), self.dim), dtype=np.float32)
-        groups: dict[int, list[int]] = {}
-        for i, w in enumerate(ws):
-            groups.setdefault(w.shape[0], []).append(i)
-        for idx in groups.values():
+        for idx in bounded_batches([w.shape[0] for w in ws]):
             out[idx] = self._forward(np.stack([ws[i] for i in idx]))
         return _l2(out)
+
+
+def bounded_batches(lengths: list[int], max_samples: int | None = None) -> list[list[int]]:
+    """Index batches of equal-length clips holding ≤ `max_samples` samples in total (default
+    MAX_BATCH_S of audio; a single longer clip gets a batch of its own), in length order."""
+    cap = max_samples or int(MAX_BATCH_S * SAMPLE_RATE)
+    out: list[list[int]] = []
+    cur: list[int] = []
+    for i in sorted(range(len(lengths)), key=lambda i: lengths[i]):
+        if cur and (lengths[i] != lengths[cur[0]] or (len(cur) + 1) * lengths[i] > cap):
+            out.append(cur)
+            cur = []
+        cur.append(i)
+    return out + [cur] if cur else out
 
 
 # ---------------------------------------------------------------------------
