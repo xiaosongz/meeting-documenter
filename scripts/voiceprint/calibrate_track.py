@@ -11,8 +11,9 @@ Duration-aware score calibration for the tracker (track.Calibration).
         (llr' = α·llr + β). Used on the private store, whose exemplars are all ≥ 2 s, so the
         short-duration behaviour must come from the public fit.
     store_trials(store, model_id, top_n) -> (s, d, y, meeting)
-        Leave-one-meeting-out trials from enrolled exemplars: every exemplar of meeting m is
-        scored against models and cohort built without m.
+        Leave-one-meeting-out trials: every exemplar of meeting m is scored against models
+        and cohort built without m; cohort-table clips of m (voices that are not enrolled)
+        are scored too, as stranger (non-target) trials for every name.
     calibrate_store(store, model_id, base) -> (Calibration, report)
 
 Numpy only (the store trials import scoring.py).
@@ -21,6 +22,7 @@ Numpy only (the store trials import scoring.py).
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -141,10 +143,17 @@ def store_trials(store, model_id: str, top_n: int = 100):
     from .track import scorer_from_store
 
     ex = store.exemplars(model_id)
-    meetings = sorted({e.meeting_key for e in ex if e.meeting_key})
+    enrolled = {e.person for e in ex}
+    strangers = [c for c in store.cohort_clips(model_id)
+                 if c.meeting_key and (c.person is None or c.person not in enrolled)]
+    meetings = sorted({e.meeting_key for e in ex if e.meeting_key} | {c.meeting_key for c in strangers})
     S, D, Y, MK = [], [], [], []
     for m in meetings:
-        test = [e for e in ex if e.meeting_key == m]
+        # cohort-table voices of meeting m are stranger trials: non-target for every name
+        # (they are not enrolled, so they measure exactly the open-set risk)
+        test = [e for e in ex if e.meeting_key == m] + [
+            SimpleNamespace(person=None, embedding=c.embedding, net_dur=c.net_dur, channel="unknown")
+            for c in strangers if c.meeting_key == m]
         by_ch: dict = {}
         for e in test:
             ch = e.channel if e.channel in ("phone", "zoom", "room") else None
