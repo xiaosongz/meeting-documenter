@@ -181,3 +181,51 @@ def test_first_time_enroll_refuses_cluster_matching_enrolled_person(env, capsys)
     # a genuinely new voice enrolls without complaint
     assert run(store, "enroll", "--name", "Dave", "--audio", str(wav2), "--utterances", str(side2),
                "--cluster", "B") == 0
+
+
+def test_track_noop_on_empty_store(tmp_path):
+    wav, _ = make_meeting(tmp_path, "2026-01-01-1000", [150, 260], turns=2)
+    out = tmp_path / "r.json"
+    assert run(tmp_path / "empty", "track", "--audio", str(wav), "--json", str(out)) == 0
+    assert json.loads(out.read_text())["status"] == "no_voiceprints"
+
+
+def test_track_end_to_end_with_oracle_boundaries(env, monkeypatch):
+    """enroll two voices from one meeting, then `track` another meeting. The boundary layer is
+    replaced by oracle slots (the synthetic tones are not speech to the real models)."""
+    from voiceprint import segment as sg
+    from voiceprint import timeline as tlm
+    tmp, store = env
+    for key, seed in (("2026-01-01-1000", 1), ("2026-01-03-1000", 3)):
+        wav1, side1 = make_meeting(tmp, key, [150, 260], seed=seed)
+        for c, name in (("A", "Alice"), ("B", "Bob")):
+            assert run(store, "enroll", "--name", name, "--audio", str(wav1), "--utterances", str(side1),
+                       "--cluster", c) == 0
+    cal = tmp / "cal.json"
+    assert run(store, "track-calibrate", "--json", str(cal)) == 0
+    assert json.loads(cal.read_text())["calibration"]["source"].startswith("store-lomo")
+    wav2, side2 = make_meeting(tmp, "2026-01-02-1000", [260, 150, 400], turns=6, seed=2)
+    utts = json.loads(side2.read_text())["utterances"]
+
+    def oracle(wave, sr=SR, backend="seg3", **kw):
+        n = int(np.ceil(len(wave) / sr / 0.01))
+        P = np.zeros((n, 3), np.float32)
+        for u in utts:
+            P[u["start"] // 10:u["end"] // 10, ord(u["speaker"]) - ord("A")] = 0.95
+        return sg.LocalSegmentation(np.zeros(1), len(wave) / sr, 0.01, 0.01, P[None], "oracle",
+                                    {"duration": len(wave) / sr})
+    monkeypatch.setattr(sg, "segment", oracle)
+    out, js = tmp / "tl.json", tmp / "r.json"
+    assert run(store, "track", "--audio", str(wav2), "--backend", "seg3", "--out", str(out),
+               "--json", str(js)) == 0
+    res = json.loads(js.read_text())
+    assert res["status"] == "ok" and res["excluded_meetings"] == ["2026-01-02-1000"]
+    tl = tlm.from_json(out.read_text())
+    got = {}
+    for t in tl.turns:
+        got.setdefault(t.speaker, 0.0)
+        got[t.speaker] += t.dur
+    assert got.get("Bob Example", 0) > 15 and got.get("Alice Example", 0) > 15   # A=260 Hz, B=150 Hz
+    assert any(t.speaker.startswith("GUEST_") for t in tl.turns)                  # 400 Hz is unenrolled
+    c_turns = [(21.0, 31.0), (52.5, 62.5)]                                         # voice C (k = 2, 5)
+    assert not any(t.kind == "name" and a < (t.start + t.end) / 2 < b for t in tl.turns for a, b in c_turns)

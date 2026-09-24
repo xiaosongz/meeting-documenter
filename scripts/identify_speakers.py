@@ -15,6 +15,9 @@ Usage:
         --cluster A [--channel phone] [--source confirmed_meeting|user_ear|self_check]
     identify_speakers.py cohort-add --audio X --utterances X.json [--clusters A,C]
     identify_speakers.py calibrate [--model-id ID] [--dry-run] [--json out.json|-]
+    identify_speakers.py track --audio X.m4a [--roster "Alice Example,Bob Example"]
+        [--backend auto|nemotron3|seg3] [--channel phone] [--out X.timeline.json] [--rttm X.rttm]
+    identify_speakers.py track-calibrate [--dry-run] [--json out.json|-]
     identify_speakers.py list [--json]
     identify_speakers.py forget --name "Canonical Name" --yes
     identify_speakers.py audit sample --input X.m4a X.timeline.json [--input …] --out DIR
@@ -485,6 +488,86 @@ def _identify(args) -> int:
     return 0
 
 
+# ─── track (known-speaker tracking: who speaks when) ───────────────────────
+
+def cmd_track(args) -> int:
+    try:
+        return _track(args)
+    except Exception as e:  # advisory step: never break the transcribe flow
+        traceback.print_exc(file=sys.stderr)
+        return noop("error", f"{type(e).__name__}: {e}", args.json)
+
+
+def _track(args) -> int:
+    from voiceprint import timeline as vp_timeline
+    from voiceprint import track as vp_track
+
+    names = NameResolver()
+    store = vp_store.VoiceprintStore.open(args.store, create=False)
+    if store.count() == 0:
+        return noop("no_voiceprints", f"store empty at {store.root}", args.json)
+    embedder, why = load_embedder(args.model, args.device)
+    if embedder is None:
+        return noop("no_embedder", why, args.json)
+    if not store.exemplars(embedder.model_id):
+        return noop("no_voiceprints", f"no exemplars for model_id {embedder.model_id}", args.json)
+    mk = args.meeting_key or vp_audio.meeting_key_from(args.audio)
+    exclude = [] if args.include_self or not mk else [mk]
+    roster = names.split(args.roster) or None
+    params = vp_track.TrackParams()
+    over = {k: v for k, v in (("theta", args.theta), ("switch", args.switch),
+                              ("p_uncertain", args.p_uncertain)) if v is not None}
+    if over:
+        params = replace(params, **over)
+    info: dict = {}
+    tl = vp_track.track(args.audio, roster, store, embedder, backend=args.backend, params=params,
+                        channel=args.channel, exclude_meetings=exclude, info=info)
+    if args.out:
+        Path(args.out).write_text(vp_timeline.to_json(tl) + "\n", encoding="utf-8")
+    if args.rttm:
+        uri = Path(args.audio).stem.replace(" ", "_")
+        Path(args.rttm).write_text(vp_timeline.to_rttm(tl, uri), encoding="utf-8")
+    speech: dict[str, float] = {}
+    for t in tl.exclusive:
+        speech[t.speaker] = speech.get(t.speaker, 0.0) + t.dur
+    result = {"status": "ok", "audio": str(args.audio), "meeting_key": mk, "excluded_meetings": exclude,
+              "backend": tl.meta.get("backend"), "roster": tl.meta.get("roster"),
+              "calibration": tl.meta.get("calibration", {}).get("source"),
+              "speakers_s": {k: round(v, 1) for k, v in sorted(speech.items(), key=lambda kv: -kv[1])},
+              "turns": len(tl.turns), "info": info, "out": args.out, "rttm": args.rttm}
+    print(f"track: {len(tl.turns)} turns, backend {result['backend']}, "
+          f"{info.get('xrt', '?')}x real time, peak footprint {info.get('peak_footprint_gb')} GB", file=sys.stderr)
+    for k, v in result["speakers_s"].items():
+        print(f"  {k:<32} {v:8.1f} s", file=sys.stderr)
+    emit(result, args.json)
+    return 0
+
+
+def cmd_track_calibrate(args) -> int:
+    from voiceprint import calibrate_track as vp_ct
+    from voiceprint import track as vp_track
+
+    store = vp_store.VoiceprintStore.open(args.store, create=False)
+    embedder, why = load_embedder(args.model, "cpu")
+    if embedder is None:
+        print(f"❌ {why}", file=sys.stderr)
+        return 1
+    cal, rep = vp_ct.calibrate_store(store, embedder.model_id, vp_track.DEFAULT_CALIBRATION, args.top_n)
+    result = {"model_id": embedder.model_id, "calibration": cal.to_dict(), "report": rep,
+              "written": not args.dry_run}
+    if not args.dry_run:
+        entry = store.load_calibration(embedder.model_id) or {}
+        entry["track"] = cal.to_dict()
+        path = store.save_calibration(embedder.model_id, entry)
+        print(f"track calibration → {path}", file=sys.stderr)
+    r0, r1 = rep["base"]["all"], rep["refit"]["all"]
+    print(f"track-calibrate: {r1['n_target']} target / {r1['n_nontarget']} non-target LOMO trials; "
+          f"Cllr {r0['cllr']:.3f} → {r1['cllr']:.3f} (min {r1['min_cllr']:.3f}), EER {r1['eer']:.3f}",
+          file=sys.stderr)
+    emit(result, args.json)
+    return 0
+
+
 def _fmt(x, w=7):
     return f"{'—':>{w}}" if x is None else f"{x:>{w}.2f}"
 
@@ -920,6 +1003,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", help="write JSON result to path, or '-' for stdout")
     p.set_defaults(func=cmd_calibrate)
 
+    p = sub.add_parser("track", help="who speaks when: track enrolled speakers through a recording")
+    p.add_argument("--audio", required=True, type=Path)
+    p.add_argument("--roster", help="comma-separated attendee names (default: everyone enrolled)")
+    p.add_argument("--channel", choices=vp_config.CHANNELS, help="use per-channel sub-centroids")
+    p.add_argument("--backend", choices=["auto", "nemotron3", "seg3"], default="auto",
+                   help="boundary layer (auto: nemotron3 when installed, else seg3)")
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--device", choices=["auto", "cpu", "mps"], default="auto")
+    p.add_argument("--meeting-key", help="YYYY-MM-DD-HHMM (default: from the file name)")
+    p.add_argument("--include-self", action="store_true",
+                   help="also use exemplars enrolled from this same meeting (default: excluded)")
+    p.add_argument("--theta", type=float, help="UNKNOWN log-odds (default: TrackParams)")
+    p.add_argument("--switch", type=float, help="HMM switch penalty λ")
+    p.add_argument("--p-uncertain", type=float, help="posterior below which a name becomes UNCERTAIN")
+    p.add_argument("--out", help="write the Timeline JSON here")
+    p.add_argument("--rttm", help="write the turns as RTTM here")
+    p.add_argument("--json", help="write a JSON summary to path, or '-' for stdout")
+    p.set_defaults(func=cmd_track)
+
+    p = sub.add_parser("track-calibrate", help="refit the tracker's score calibration on the store (LOMO)")
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--top-n", type=int, default=100)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--json", help="write JSON result to path, or '-' for stdout")
+    p.set_defaults(func=cmd_track_calibrate)
+
     p = sub.add_parser("list", help="enrolled people, counts, channels, model ids (no vectors)")
     p.add_argument("--json", nargs="?", const="-")
     p.set_defaults(func=cmd_list)
@@ -937,7 +1046,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if DEPS_ERROR:
-        if args.cmd == "identify":
+        if args.cmd in ("identify", "track"):
             return noop("no_deps", f"voiceprint dependencies not installed ({DEPS_ERROR}); "
                         "see README § Voiceprint speaker ID", args.json)
         print(f"❌ voiceprint dependencies not installed ({DEPS_ERROR}). Install them with "
@@ -948,7 +1057,7 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except vp_config.VaultPathError as e:
         print(f"❌ {e}", file=sys.stderr)
-        return 0 if args.cmd == "identify" else 2
+        return 0 if args.cmd in ("identify", "track") else 2
 
 
 if __name__ == "__main__":
