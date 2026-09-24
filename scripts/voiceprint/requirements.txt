@@ -1,0 +1,10 @@
+# Optional voiceprint speaker-ID dependencies (advisory Step 2.5a).
+# Installed by scripts/transcribe.sh only when MEETING_DOCUMENTER_VOICEPRINT=1.
+# Model weights are fetched separately: python scripts/voiceprint/fetch_models.py
+numpy
+scipy
+pyyaml
+soundfile
+torch
+torchaudio
+sherpa-onnx
