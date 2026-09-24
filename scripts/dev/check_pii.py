@@ -176,7 +176,7 @@ def scan_patch(patch: str, roster, label: str) -> list[str]:
     """Commit messages, added lines and file names of `git log -p` / `git diff` output."""
     out, current, n = [], label, 0
     in_msg = True
-    for line in patch.splitlines():
+    for line in patch.split("\n"):                              # not splitlines(): it splits on \x1e
         if line.startswith("\x1ecommit "):                        # our --format separator
             in_msg, current, n = True, f"{label} message {line.split()[1][:12]}", 0
             continue

@@ -93,6 +93,7 @@ class CheckPiiTests(unittest.TestCase):
         kinds = sorted(f.split(": ")[1] for f in found)
         self.assertEqual(kinds, ["email", "file", "roster"], found)        # removed line ignored
         self.assertTrue(any(f.startswith("docs/a.md:2: email") for f in found), found)
+        self.assertTrue(any(f.startswith("log message 0123456789ab:1: roster") for f in found), found)
 
     def test_repository_is_clean_without_roster(self):
         result = subprocess.run(["python3", str(ROOT / "scripts" / "dev" / "check_pii.py"), "--no-roster"],
