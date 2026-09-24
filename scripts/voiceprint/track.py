@@ -74,6 +74,7 @@ class TrackParams:
     guest_min_s: float = 5.0        # guest clusters with less speech stay UNKNOWN
     # second pass
     turn_min_s: float = 3.0         # re-score contiguous turns at least this long
+    turn_gap_s: float = 1.0         # a pause longer than this on the track ends a turn
     turn_max_embed_s: float = 30.0  # clean audio per turn embedding (capped by the device cap)
     turn_override_p: float = 0.9    # posterior needed to relabel a turn
     second_pass: bool = True
@@ -88,15 +89,19 @@ class TrackParams:
 class Calibration:
     """llr = a·s + b·s·ln(d) + c·ln(d) + k, with s the AS-norm score and d the seconds of
     clean audio behind the embedding (a quality measure function on log-duration). Fitted
-    by prior-weighted logistic regression, so the output is a log-likelihood ratio."""
+    by prior-weighted logistic regression, so the output is a log-likelihood ratio. d is
+    clamped to [d_min, d_max], the durations the fit saw: the duration terms must not be
+    extrapolated (a 30 s turn is scored as a d_max one)."""
     a: float
     b: float
     c: float
     k: float
     source: str = "default"
+    d_min: float = 0.5              # durations are clamped to the range the fit has seen
+    d_max: float = 10.0
 
     def llr(self, s: np.ndarray, d: np.ndarray | float) -> np.ndarray:
-        ld = np.log(np.maximum(np.asarray(d, np.float64), 0.25))
+        ld = np.log(np.clip(np.asarray(d, np.float64), self.d_min, self.d_max))
         s = np.asarray(s, np.float64)
         ld = ld if ld.ndim == 0 or ld.ndim == s.ndim else ld.reshape(ld.shape + (1,) * (s.ndim - ld.ndim))
         return (self.a * s + self.b * s * ld + self.c * ld + self.k).astype(np.float32)
@@ -106,12 +111,14 @@ class Calibration:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Calibration":
-        return cls(float(d["a"]), float(d["b"]), float(d["c"]), float(d["k"]), str(d.get("source", "?")))
+        return cls(float(d["a"]), float(d["b"]), float(d["c"]), float(d["k"]), str(d.get("source", "?")),
+                   float(d.get("d_min", 0.5)), float(d.get("d_max", 10.0)))
 
 
 # Fitted on the public AMI dev split (ReDimNet2, far-field test vs headset enrollment,
 # enrollment-QC protocol); see calibrate_track.py. The private store refits a and k.
-DEFAULT_CALIBRATION = Calibration(a=0.5824, b=0.0801, c=-3.0211, k=-2.2837, source="ami-dev-2026-09-24")
+DEFAULT_CALIBRATION = Calibration(a=0.5826, b=0.0799, c=-3.0205, k=-2.2843, source="ami-dev-2026-09-24",
+                                  d_min=1.0, d_max=9.0)
 
 
 # ─── Tracks ─────────────────────────────────────────────────────────────────
@@ -771,8 +778,8 @@ class TurnCandidate:
 
 
 def long_turns(trs: Tracks, fl: FrameLabels, units: list[Unit], params: TrackParams) -> list[TurnCandidate]:
-    """Contiguous same-label runs of one track (gaps allowed) lasting ≥ turn_min_s, with the
-    track's clean spans inside them."""
+    """Contiguous same-label runs of one track (pauses ≤ turn_gap_s allowed) lasting
+    ≥ turn_min_s, with the track's clean spans inside them."""
     out = []
     by_track: dict[int, list[Unit]] = {}
     for u in units:
@@ -781,7 +788,8 @@ def long_turns(trs: Tracks, fl: FrameLabels, units: list[Unit], params: TrackPar
         f = np.flatnonzero(lab >= 0)
         if not len(f):
             continue
-        brk = np.flatnonzero(np.diff(lab[f]) != 0) + 1
+        gap = int(round(params.turn_gap_s / trs.step))
+        brk = np.flatnonzero((np.diff(lab[f]) != 0) | (np.diff(f) > gap)) + 1
         for a, b in zip(np.concatenate([[0], brk]), np.concatenate([brk, [len(f)]])):
             f0, f1 = start + int(f[a]), start + int(f[b - 1]) + 1
             t0, t1 = float(trs.time(f0)), float(trs.time(f1))

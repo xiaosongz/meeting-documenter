@@ -30,7 +30,7 @@ DUR_BUCKETS = ((0.0, 1.5), (1.5, 3.0), (3.0, 6.0), (6.0, 1e9))
 
 
 def _features(s: np.ndarray, d: np.ndarray) -> np.ndarray:
-    ld = np.log(np.maximum(np.asarray(d, np.float64), 0.25))
+    ld = np.log(np.asarray(d, np.float64))
     s = np.asarray(s, np.float64)
     return np.stack([s, s * ld, ld, np.ones_like(s)], axis=1)
 
@@ -121,8 +121,9 @@ def report(cal: Calibration, s: np.ndarray, d: np.ndarray, y: np.ndarray) -> dic
 
 def fit_calibration(s, d, y, source: str = "fit") -> tuple[Calibration, dict]:
     s, d, y = np.asarray(s, np.float64), np.asarray(d, np.float64), np.asarray(y, bool)
-    a, b, c, k = _logistic(_features(s, d), y)
-    cal = Calibration(float(a), float(b), float(c), float(k), source)
+    lo, hi = float(np.percentile(d, 1)), float(np.percentile(d, 99))
+    a, b, c, k = _logistic(_features(np.asarray(s), np.clip(d, lo, hi)), y)
+    cal = Calibration(float(a), float(b), float(c), float(k), source, round(lo, 2), round(hi, 2))
     return cal, report(cal, s, d, y)
 
 
@@ -130,7 +131,7 @@ def refit_scale(base: Calibration, s, d, y, source: str = "store") -> Calibratio
     s, d, y = np.asarray(s, np.float64), np.asarray(d, np.float64), np.asarray(y, bool)
     z = base.llr(s, d).astype(np.float64)
     al, be = _logistic(np.stack([z, np.ones_like(z)], axis=1), y)
-    return Calibration(base.a * al, base.b * al, base.c * al, base.k * al + be, source)
+    return Calibration(base.a * al, base.b * al, base.c * al, base.k * al + be, source, base.d_min, base.d_max)
 
 
 def store_trials(store, model_id: str, top_n: int = 100):
