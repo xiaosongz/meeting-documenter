@@ -185,3 +185,19 @@ def test_label_frames_fill_and_unknown_far_from_units():
     fl = T.label_frames(trs, units, ["A"], np.array([0.9], np.float32), T.TrackParams(fill_s=10.0))
     turns = [t for _, t in T.frames_to_turns(trs, fl)]
     assert [(t.speaker, round(t.start), round(t.end)) for t in turns] == [("A", 0, 3), (UNKNOWN, 40, 41)]
+
+
+def test_stranger_resembling_an_enrolled_track_is_demoted():
+    """Track 1 (a stranger) looks weakly like P0 on every unit; track 0 is P0 itself. With
+    track-level identities P0 belongs to track 0, so track 1 abstains instead of taking P0."""
+    units = [T.Unit(0, a, a + 5, [(a, a + 5)], 5.0, i, 5.0) for i, a in enumerate((0.0, 20.0, 40.0))]
+    units += [T.Unit(1, a, a + 5, [(a, a + 5)], 5.0, 3 + i, 5.0) for i, a in enumerate((10.0, 30.0, 50.0))]
+    E = np.zeros((6, 3), np.float32)
+    E[:3, 0], E[3:, 0] = 5.0, 1.0                                 # names P0, P1; UNKNOWN θ = 0
+    E[:, 1] = -5.0
+    trs = T.tracks_from_segmentation(slot_seg([(0, 0, 5), (1, 10, 15)], n_slots=2), T.TrackParams())
+    assert T.track_identities(units, E, 2) == {0: 0, 1: 2}
+    on = T.decode_units(units, trs, E, ["P0", "P1"], T.TrackParams(foreign_p=2.0))
+    off = T.decode_units(units, trs, E, ["P0", "P1"], T.TrackParams(foreign_p=1.0))
+    assert on.label == ["P0"] * 3 + [UNKNOWN] * 3
+    assert off.label == ["P0"] * 6

@@ -5,6 +5,10 @@
     python -m bench.systems.tracker tune      --dataset ami --split dev --cal cal.json --out tune.json
     python -m bench.systems.tracker run       --dataset ami --split test --cal cal.json \
                                               --params params.json --out <dir> [--system track|b1]
+    python -m bench.systems.tracker logo      --dataset aishell4 --grid grid.json --out <dir> \
+                                              [--objective bal|strict] [--system track|b1]
+        leave-one-group-out for a split without a dev set: for each series, calibrate and
+        pick the grid point on the other series, then decode the held-out one
 
 Stages, all cached under $SPEAKER_BENCH_DIR/cache/track/ so later stages cost no model time:
     boundary   activations from `--boundary-cache` roots (the st-boundary eval caches) or
@@ -404,9 +408,68 @@ def prepare_split(a, params, log) -> list[Prepared]:
     return [prepare_meeting(m, pool, params, a.backend, roots, model_id, a.device, qc, log) for m in todo]
 
 
+def pick(rows: list[dict], objective: str, max_fn: float = 0.01) -> dict:
+    if objective == "strict":
+        ok = [r for r in rows if r["false_name"] is not None and r["false_name"] <= max_fn]
+        if ok:
+            return min(ok, key=lambda r: r["ier"])
+        return min(rows, key=lambda r: (r["false_name"], r["ier"]))
+    return min(rows, key=lambda r: 0.5 * (r["ier"] + (r["loo_ier"] if r["loo_ier"] is not None else r["ier"])))
+
+
+def logo(a, preps: list[Prepared], params, log) -> int:
+    """Leave-one-series-out calibration + grid choice, then decode each held-out series."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    from voiceprint import calibrate_track as CT
+    from ..baselines import ahc_id
+    grid = json.loads(a.grid.read_text()) if a.grid else [{}]
+    base_b1 = ahc_id.B1Params(**(json.loads(a.b1.read_text())["b1"] if a.b1 else {}))
+    series = sorted({p.meeting.series for p in preps})
+    sysdir, chosen, stats = a.out / "system", {}, []
+    for g in series:
+        train = [p for p in preps if p.meeting.series != g]
+        test = [p for p in preps if p.meeting.series == g]
+        tr = calibration_trials(train, params)
+        cal, rep = CT.fit_calibration(tr["s"], tr["d"], tr["y"], source=f"{a.dataset}/logo-{g}")
+        if a.system == "b1":
+            cfgs = [("b1", params, cal.to_dict(), replace(base_b1, **o)) for o in grid]
+        else:
+            cfgs = [("track", replace(params, second_pass=False, **o), cal.to_dict(), None) for o in grid]
+        rows = [{"override": o, **r} for o, r in zip(grid, eval_grid(train, cfgs, a.workers))]
+        for r in rows:
+            log(f"logo {g} grid " + json.dumps(r))
+        best = pick(rows, a.objective)
+        chosen[g] = {"override": best["override"], "train": {k: v for k, v in best.items() if k != "override"},
+                     "calibration": cal.to_dict(), "cal_report": rep["all"]}
+        log(f"logo {g}: {json.dumps(chosen[g]['override'])} train IER {100 * best['ier']:.2f} "
+            f"FN {100 * (best['false_name'] or 0):.2f}")
+        prm = replace(params, **best["override"]) if a.system != "b1" else params
+        b1 = replace(base_b1, **best["override"]) if a.system == "b1" else None
+        for p in test:
+            for k, r in rosters(p.meeting, sorted(p.models)).items():
+                t = time.time()
+                if a.system == "b1":
+                    segs, info = decode_b1(p, r, prm, cal, b1)
+                else:
+                    segs, info = decode_track(p, r, prm, cal, a.device)
+                path = sysdir / "closed" / f"{p.meeting.id}.rttm" if k == "closed" else \
+                    sysdir / "loo" / p.meeting.id / f"{k[4:]}.rttm"
+                write_rttm(path, p.meeting.id, segs)
+                if k == "closed":
+                    stats.append({**p.info, "decode_s": round(time.time() - t, 2)})
+    (a.out / "run-params.json").write_text(json.dumps(
+        {"system": a.system, "protocol": "leave-one-series-out", "objective": a.objective,
+         "backend": a.backend, "params": asdict(params), "chosen": chosen, "stats": stats}, indent=1) + "\n")
+    from .. import run as bench_run
+    bench_run.main(["--dataset", a.dataset, "--split", a.split, *(["--enroll-qc"] if a.enroll_qc else []),
+                    "--system", str(sysdir), "--out", str(a.out)])
+    log("done")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("cmd", choices=["prepare", "calibrate", "tune", "run"])
+    ap.add_argument("cmd", choices=["prepare", "calibrate", "tune", "run", "logo"])
     ap.add_argument("--dataset", required=True, choices=["ami", "aishell4"])
     ap.add_argument("--split", default="test")
     ap.add_argument("--backend", default="nemotron3", choices=["nemotron3", "seg3"])
@@ -421,6 +484,9 @@ def main(argv=None) -> int:
     ap.add_argument("--b1", type=Path, help="B1 params JSON (ahc_id.B1Params fields under 'b1')")
     ap.add_argument("--grid", type=Path, help="tune: JSON list of override dicts")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--objective", default="bal", choices=["bal", "strict"],
+                    help="grid choice: min mean(closed IER, leave-one-out IER) as B0's tuning (bal), "
+                         "or min closed IER with false-name ≤ 1 %% (strict)")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args(argv)
     os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "0")
@@ -443,6 +509,8 @@ def main(argv=None) -> int:
         a.out.write_text(json.dumps({"calibration": cal.to_dict(), "report": rep}, indent=1) + "\n")
         log(f"calibration {cal.to_dict()} {json.dumps(rep)}")
         return 0
+    if a.cmd == "logo":
+        return logo(a, preps, params, log)
     cal = load_cal(a.cal)
     b1 = None
     if a.system == "b1":

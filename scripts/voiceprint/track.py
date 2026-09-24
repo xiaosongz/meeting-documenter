@@ -67,8 +67,8 @@ class TrackParams:
     fill_s: float = 10.0            # speech further than this from any unit of its track → UNKNOWN
     p_uncertain: float = 0.0        # MAP posterior below this turns a name into UNCERTAIN(A|B)
     conflict_s: float = 0.5         # simultaneous speech that makes two tracks' equal names a conflict
-    foreign_p: float = 1.0          # a name that is another track's primary identity needs this posterior
-                                    # (1.0 = off); see demote_foreign
+    foreign_p: float = 2.0          # a name that is another track's primary identity needs this posterior
+                                    # (1.0 = off, > 1 = never allowed); see demote_foreign
     # guests
     guest_cos: float = 0.55         # AHC (average linkage) cosine threshold between UNKNOWN groups
     guest_min_s: float = 5.0        # guest clusters with less speech stay UNKNOWN
@@ -76,8 +76,9 @@ class TrackParams:
     turn_min_s: float = 3.0         # re-score contiguous turns at least this long
     turn_gap_s: float = 1.0         # a pause longer than this on the track ends a turn
     turn_max_embed_s: float = 30.0  # clean audio per turn embedding (capped by the device cap)
-    turn_override_p: float = 0.9    # posterior needed to relabel a turn
-    second_pass: bool = True
+    turn_override_p: float = 0.95   # posterior needed to relabel a turn
+    second_pass: bool = False       # neutral on AMI dev (IER 17.73 → 17.69 at best) for ~20x the
+                                    # embedding time, so off by default
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -496,8 +497,8 @@ def decode_units(units: list[Unit], trs: Tracks, E: np.ndarray, names: list[str]
         idx.sort(key=lambda i: units[i].t0)
         post[idx] = hmm_posteriors(E[idx].astype(np.float64), params.switch)
     state = post.argmax(1)
-    if params.foreign_p < 1.0 and K:
-        state = demote_foreign(units, post, state, K, params)
+    if params.foreign_p != 1.0 and K:
+        state = demote_foreign(units, post, state, K, params, E)
     state = resolve_conflicts(units, trs, post, state, K, params)
     labels, conf = [], np.zeros(len(units), np.float32)
     for i, s in enumerate(state):
@@ -513,31 +514,36 @@ def decode_units(units: list[Unit], trs: Tracks, E: np.ndarray, names: list[str]
     return Decoded(names, post, state, labels, conf)
 
 
-def track_identities(units: list[Unit], post: np.ndarray, K: int) -> dict[int, int]:
-    """Primary identity per track: Hungarian over tracks × (names ∪ one UNKNOWN per track)
-    on the embedded-duration-weighted posterior mass. A name goes to at most one track."""
+def track_identities(units: list[Unit], E: np.ndarray, K: int) -> dict[int, int]:
+    """Primary identity per track: Hungarian over tracks × (names ∪ one UNKNOWN per track) on
+    each track's mean emission (clean-duration-weighted calibrated LLR; θ for UNKNOWN). The
+    mean, not the sum or the HMM posterior: a talkative stranger who resembles X on every
+    unit must not outweigh X's own track, whose evidence for X is far stronger per unit."""
     from scipy.optimize import linear_sum_assignment
 
     tracks = sorted({u.track for u in units})
-    mass = np.zeros((len(tracks), K + 1))
     row = {k: r for r, k in enumerate(tracks)}
+    acc = np.zeros((len(tracks), K + 1))
+    w = np.zeros(len(tracks))
     for i, u in enumerate(units):
         if u.emb_row >= 0:
-            mass[row[u.track]] += post[i] * u.emb_s
+            acc[row[u.track]] += E[i] * u.emb_s
+            w[row[u.track]] += u.emb_s
+    mean = acc / np.maximum(w, 1e-9)[:, None]
     n = len(tracks)
     gain = np.full((n, K + n), -1e9)
-    gain[:, :K] = mass[:, :K]
-    gain[np.arange(n), K + np.arange(n)] = mass[:, K]
+    gain[:, :K] = np.where(w[:, None] > 0, mean[:, :K], -1e9)
+    gain[np.arange(n), K + np.arange(n)] = np.where(w > 0, mean[:, K], 0.0)
     r, c = linear_sum_assignment(-gain)
     return {tracks[a]: (int(b) if b < K else K) for a, b in zip(r, c)}
 
 
 def demote_foreign(units: list[Unit], post: np.ndarray, state: np.ndarray, K: int,
-                   params: TrackParams) -> np.ndarray:
+                   params: TrackParams, E: np.ndarray) -> np.ndarray:
     """With global slots, a speaker normally lives on one track. A unit labelled with a name
     that is *another* track's primary identity keeps it only with posterior ≥ foreign_p;
     otherwise it falls back to UNKNOWN (an abstention, never a different guess)."""
-    prim = track_identities(units, post, K)
+    prim = track_identities(units, E, K)
     owner = {s: k for k, s in prim.items() if s < K}
     state = state.copy()
     for i, u in enumerate(units):
