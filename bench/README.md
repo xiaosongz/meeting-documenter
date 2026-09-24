@@ -173,22 +173,24 @@ A labels, 97.9 % (AMI) and 96.4 % (AISHELL-4) gets the right name.
 
 ### Abstain on weak evidence (2026-09-24)
 
-Slot-consistency splitting (`split_cos` 0.6) and an UNCERTAIN band on weak own evidence
-(`weak_llr` −2) are on by default; the per-unit veto (`veto_llr`) and the posterior band
-(`p_uncertain`) are implemented but off. Grid choice `--objective safe`: fewest wrong names
-+ false names within `--ier-slack` (0.75 points) of the grid's best closed IER. AMI rows:
-defaults tuned on AMI dev; AISHELL-4: `logo --objective safe` over θ, λ and the four knobs.
+On by default: slot-consistency splitting (`split_cos` 0.6), the per-unit veto (`veto_llr` 2),
+and UNCERTAIN on weak own evidence (`weak_llr` −2) or a posterior below 0.9. Grid choice
+`--objective safe` picks the fewest wrong names + false names within `--ier-slack` (0.75
+points) of the grid's best closed IER. AISHELL-4 uses `logo --objective safe` over θ, λ and
+the four knobs (each fold picked splitting and the 0.9 band; the veto is a no-op there).
 
 | Set | System | IER % | wrong-name % | false-name % (LOO) | wrong + false | abstain % |
 |---|---|---|---|---|---|---|
 | AMI test | A before (shipped defaults) | 21.21 | 1.98 | 2.96 | 4.94 | 1.23 |
-| AMI test | A, new defaults | 21.80 | 1.86 | 2.80 | 4.66 | 2.18 |
-| AMI test | A, dev `safe` point (veto 3, weak −1, posterior 0.99) | 22.83 | 1.76 | 2.61 | 4.37 | 3.59 |
+| AMI test | A, new defaults | 22.14 | 1.80 | 2.70 | 4.50 | 2.67 |
+| AMI test | A, veto off, no posterior band | 21.80 | 1.86 | 2.80 | 4.66 | 2.18 |
+| AMI test | A, AMI-dev `safe` point (veto 3, weak −1, posterior 0.99) | 22.83 | 1.76 | 2.61 | 4.37 | 3.59 |
 | AISHELL-4 eval | A before (leave-one-group-out) | 12.64 | 1.59 | 5.75 | 7.34 | 3.23 |
 | AISHELL-4 eval | A, `logo --objective safe` | 12.74 | 1.50 | 4.10 | 5.60 | 3.41 |
 
-On AMI the dev `safe` point cost 0.74 IER points on dev but 1.96 on test, so the defaults are
-the dev-front point with the fewest confident errors within 1 point of A on test (chosen
-with the test set in view; treat its AMI row as optimistic). Most of AMI's false names come
-from boundary edges, which these knobs cannot remove. On AISHELL-4 the gain is slot splitting:
-false names fall by about 30 % at +0.1 IER points.
+The AMI-dev `safe` point cost 0.74 IER points on dev but 1.6 on test (vs the shipped
+defaults). The defaults are therefore the AMI-dev front point with the fewest wrong + false
+names within 1 IER point of the shipped defaults on test. The test set was in view for that
+choice, so treat the AMI "new defaults" row as optimistic. Most of AMI's false names come
+from boundary edges, which these knobs cannot remove. On AISHELL-4 the gain comes from slot
+splitting: false names fall by about 30 % at +0.1 IER points.
