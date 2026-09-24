@@ -97,9 +97,33 @@ def _embedder(device: str):
     return _EMB
 
 
+MAX_BATCH_S = 48.0  # audio seconds per forward pass; bounds transient MPS memory
+
+
+def _batches(lengths: list[int], batch: int, max_samples: int) -> list[list[int]]:
+    """Index batches of ≤ `batch` clips and ≤ `max_samples` total samples, length-sorted so
+    equal-length clips share a forward pass (embed_batch only stacks identical lengths)."""
+    out, cur, tot = [], [], 0
+    for i in sorted(range(len(lengths)), key=lambda i: lengths[i]):
+        if cur and (len(cur) == batch or tot + lengths[i] > max_samples):
+            out.append(cur)
+            cur, tot = [], 0
+        cur.append(i)
+        tot += lengths[i]
+    return out + [cur] if cur else out
+
+
 def _embed(emb, waves: list[np.ndarray], batch: int) -> np.ndarray:
-    out = [emb.embed_batch(waves[i:i + batch]) for i in range(0, len(waves), batch)]
-    return np.concatenate(out) if out else np.zeros((0, emb.dim), np.float32)
+    """Embed in bounded batches. On MPS the caching allocator keeps buffers per input shape
+    (measured: 83 GB footprint for mixed enrollment lengths), so free it after every batch."""
+    out = np.zeros((len(waves), emb.dim), np.float32)
+    mps = str(getattr(emb, "_device", "")) == "mps"
+    for idx in _batches([len(w) for w in waves], batch, int(MAX_BATCH_S * SR)):
+        out[idx] = emb.embed_batch([waves[i] for i in idx])
+        if mps:
+            import torch
+            torch.mps.empty_cache()
+    return out
 
 
 def embed_meeting(meeting: Meeting, cdir: Path, wp: WinParams, device: str) -> dict:

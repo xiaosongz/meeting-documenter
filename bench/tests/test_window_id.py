@@ -44,3 +44,20 @@ def test_score_windows_asnorm_ranks_target_first():
     assert names == ["a", "b", "c"] and list(S.argmax(1)) == [0, 1, 2, 1]
     _, raw = B.score_windows(test, {"a": spk[0], "b": spk[1], "c": spk[2]}, cohort[:5], top_n=20)
     assert np.allclose(raw, test @ spk.T)                  # tiny cohort → raw cosine
+
+
+def test_embed_batches_bounded_and_order_preserved():
+    lengths = [48000, 24000, 96000, 24000, 48000, 24000]
+    batches = B._batches(lengths, batch=2, max_samples=100000)
+    assert sorted(i for b in batches for i in b) == list(range(len(lengths)))
+    assert all(len(b) <= 2 and sum(lengths[i] for i in b) <= 100000 or len(b) == 1 for b in batches)
+
+    class Fake:
+        dim = 1
+
+        def embed_batch(self, waves):
+            return np.array([[len(w)] for w in waves], np.float32)
+
+    waves = [np.zeros(n, np.float32) for n in lengths]
+    assert list(B._embed(Fake(), waves, batch=2)[:, 0]) == lengths
+    assert B._embed(Fake(), [], batch=2).shape == (0, 1)
