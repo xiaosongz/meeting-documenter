@@ -11,6 +11,10 @@ Rosters:
     loo:<spk>   closed minus one speaker present in M; that speaker's speech is
                 unenrolled and measures the open-set false-name rate
 Cohort (AS-norm): speakers of the other series of the same split, never anyone in S.
+
+Enrollment QC (`load_qc`, opt-in via `--enroll-qc`): AMI (meeting, speaker) sources whose
+headset mix does not carry the speaker are dropped, and so are series whose labels are
+permuted across meetings (see bench/datasets/enroll_qc.py).
 """
 
 from __future__ import annotations
@@ -64,12 +68,29 @@ def load_manifest(dataset: str) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def load_meetings(dataset: str, split: str | None = None, manifest: dict | None = None) -> list[Meeting]:
+def load_meetings(dataset: str, split: str | None = None, manifest: dict | None = None,
+                  qc: dict | None = None) -> list[Meeting]:
     man = manifest or load_manifest(dataset)
     root = bench_dir() / man["root"]
+    drop = set(qc.get("drop_meetings", ())) if qc else set()
     out = [Meeting(mid, dataset, e["split"], e["series"], tuple(e["speakers"]), e["duration_s"], root, e)
-           for mid, e in man["meetings"].items() if split is None or e["split"] == split]
+           for mid, e in man["meetings"].items()
+           if (split is None or e["split"] == split) and mid not in drop]
     return sorted(out, key=lambda m: m.id)
+
+
+def load_qc(dataset: str) -> dict | None:
+    """The committed enrollment-QC result for `dataset` (None if there is none)."""
+    p = Path(__file__).resolve().parent / "datasets" / "qc" / f"{dataset}.json"
+    if not p.is_file():
+        return None
+    qc = json.loads(p.read_text(encoding="utf-8"))
+    qc["_drop_sources"] = {tuple(x) for x in qc.get("drop_sources", ())}
+    return qc
+
+
+def source_ok(qc: dict | None, meeting_id: str, speaker: str) -> bool:
+    return not qc or (meeting_id, speaker) not in qc["_drop_sources"]
 
 
 def solo_regions(ref: list[Seg], speaker: str, guard: float = 0.0,
@@ -110,7 +131,7 @@ class EnrollSource:
 
 
 def enrollment(meeting: Meeting, pool: list[Meeting], guard: float = 0.0,
-               min_dur: float = 0.0) -> dict[str, list[EnrollSource]]:
+               min_dur: float = 0.0, qc: dict | None = None) -> dict[str, list[EnrollSource]]:
     """Enrollment sources for every participant of `meeting`'s series, excluding `meeting`."""
     series = [m for m in pool if m.series == meeting.series and m.id != meeting.id]
     participants = sorted({s for m in pool if m.series == meeting.series for s in m.speakers})
@@ -118,7 +139,7 @@ def enrollment(meeting: Meeting, pool: list[Meeting], guard: float = 0.0,
     for spk in participants:
         srcs = []
         for m in series:
-            if spk in m.speakers:
+            if spk in m.speakers and source_ok(qc, m.id, spk):
                 spans = solo_regions(m.reference(), spk, guard, min_dur)
                 if spans:
                     srcs.append(EnrollSource(spk, m.id, m.enroll_audio, tuple(spans)))
@@ -136,7 +157,7 @@ def rosters(meeting: Meeting, enrolled: list[str]) -> dict[str, set[str]]:
     return out
 
 
-def cohort_speakers(meeting: Meeting, pool: list[Meeting]) -> dict[str, list[Meeting]]:
+def cohort_speakers(meeting: Meeting, pool: list[Meeting], qc: dict | None = None) -> dict[str, list[Meeting]]:
     """Speakers from other series of the pool (never anyone in this meeting's series)."""
     in_series = {s for m in pool if m.series == meeting.series for s in m.speakers}
     out: dict[str, list[Meeting]] = {}
@@ -144,6 +165,6 @@ def cohort_speakers(meeting: Meeting, pool: list[Meeting]) -> dict[str, list[Mee
         if m.series == meeting.series:
             continue
         for s in m.speakers:
-            if s not in in_series:
+            if s not in in_series and source_ok(qc, m.id, s):
                 out.setdefault(f"{m.series}/{s}", []).append(m)
     return out

@@ -125,3 +125,23 @@ def test_cli_missing_system_file_fails(bench_env, tmp_path):
     (tmp_path / "empty").mkdir()
     with pytest.raises(FileNotFoundError):
         _run(["--dataset", "ami", "--system", str(tmp_path / "empty"), "--out", str(tmp_path / "o")])
+
+
+def test_enrollment_qc_drops_sources_and_meetings(bench_env):
+    qc = {"drop_sources": [["XX1000b", "A"]], "drop_meetings": ["XX2000c"]}
+    qc["_drop_sources"] = {tuple(x) for x in qc["drop_sources"]}
+    pool = P.load_meetings("ami", "test", qc=qc)
+    assert "XX2000c" not in {m.id for m in pool} and len(pool) == 5
+    m = next(x for x in pool if x.id == "XX1000a")
+    assert [s.meeting for s in P.enrollment(m, pool, qc=qc)["A"]] == ["XX1000c"]
+    assert [s.meeting for s in P.enrollment(m, pool)["A"]] == ["XX1000b", "XX1000c"]
+    d = next(x for x in pool if x.id == "XX2000a")
+    assert "XX1000/A" in P.cohort_speakers(d, pool) and P.source_ok(qc, "XX1000a", "A")
+    assert not P.source_ok(qc, "XX1000b", "A") and P.source_ok(None, "XX1000b", "A")
+
+
+def test_committed_ami_qc_loads():
+    qc = P.load_qc("ami")
+    assert qc is not None and {"IB4001", "IB4002"} <= set(qc["drop_meetings"])
+    assert all(len(x) == 2 for x in qc["drop_sources"]) and qc["_drop_sources"]
+    assert P.load_qc("nope") is None

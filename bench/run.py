@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from . import metrics as M
-from .protocol import Meeting, enrollment, load_meetings, rosters
+from .protocol import Meeting, enrollment, load_meetings, load_qc, rosters
 from .rttm import Seg, read_rttm, write_rttm
 
 SUM_KEYS = ("total", "correct", "confusion", "missed detection", "false alarm")
@@ -167,14 +167,17 @@ def main(argv=None) -> int:
     ap.add_argument("--collars", type=float, nargs="+", default=[0.0, 0.25])
     ap.add_argument("--turn-gap", type=float, default=0.5)
     ap.add_argument("--meetings", nargs="*", help="restrict to these meeting IDs")
+    ap.add_argument("--enroll-qc", action="store_true",
+                    help="apply bench/datasets/qc/<dataset>.json (must match how the system was run)")
     a = ap.parse_args(argv)
 
     t0 = time.time()
-    pool = load_meetings(a.dataset, a.split)
+    qc = load_qc(a.dataset) if a.enroll_qc else None
+    pool = load_meetings(a.dataset, a.split, qc=qc)
     meetings = [m for m in pool if not a.meetings or m.id in a.meetings]
     if not meetings:
         ap.error(f"no meetings for {a.dataset}/{a.split}")
-    roster_of = {m.id: rosters(m, list(enrollment(m, pool)))["closed"] for m in meetings}
+    roster_of = {m.id: rosters(m, list(enrollment(m, pool, qc=qc)))["closed"] for m in meetings}
     if a.sanity:
         closed, loo = sanity_system(meetings, a.sanity), {}
         sysdir = a.out / "system"
@@ -185,7 +188,7 @@ def main(argv=None) -> int:
         closed, loo = _load_system(a.system, meetings)
         system_name = str(a.system)
     rep = {"dataset": a.dataset, "split": a.split, "system": system_name,
-           "roster": "closed + leave-one-out" if loo else "closed",
+           "roster": "closed + leave-one-out" if loo else "closed", "enroll_qc": bool(qc),
            "collars": a.collars, "turn_gap": a.turn_gap,
            "rosters": {k: sorted(v) for k, v in roster_of.items()}}
     rep.update(score(meetings, closed, loo, a.collars, roster_of, a.turn_gap))

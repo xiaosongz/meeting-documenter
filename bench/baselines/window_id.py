@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from ..paths import bench_dir
-from ..protocol import Meeting, cohort_speakers, enrollment, load_meetings, rosters, solo_regions
+from ..protocol import Meeting, cohort_speakers, enrollment, load_meetings, load_qc, rosters, solo_regions
 from ..rttm import Seg, write_rttm
 
 REPO = Path(__file__).resolve().parents[2]
@@ -226,10 +226,11 @@ def _load(cdir: Path, mid: str, kind: str) -> dict:
         return {k: z[k] for k in z.files}
 
 
-def enrollment_models(meeting: Meeting, pool: list[Meeting], cdir: Path) -> dict[str, np.ndarray]:
+def enrollment_models(meeting: Meeting, pool: list[Meeting], cdir: Path,
+                      qc: dict | None = None) -> dict[str, np.ndarray]:
     _, _, scoring, _ = _vp()
     by: dict[str, list[np.ndarray]] = {}
-    for spk, srcs in enrollment(meeting, pool).items():
+    for spk, srcs in enrollment(meeting, pool, qc=qc).items():
         for src in srcs:
             z = _load(cdir, src.meeting, "enroll")
             sel = z["speaker"] == spk
@@ -246,14 +247,14 @@ COHORT_MAX_COS = 0.8  # cohort speakers this close to an enrolled model are pres
 
 
 def cohort_vectors(meeting: Meeting, pool: list[Meeting], cdir: Path,
-                   models: dict[str, np.ndarray] | None = None) -> np.ndarray:
+                   models: dict[str, np.ndarray] | None = None, qc: dict | None = None) -> np.ndarray:
     """Enrollment clips of the other series' speakers. With `models`, a cohort speaker whose
     centroid has cosine ≥ COHORT_MAX_COS to any enrolled model is dropped: AISHELL-4 labels
     are group-local, and a few people recur across groups under other labels (acoustic
     check: cross-group pairs at 0.86-0.91 vs same-label p05 0.85, different-label p95 0.56)."""
     C = np.stack(list(models.values())) if models else None
     vecs = []
-    for key, ms in cohort_speakers(meeting, pool).items():
+    for key, ms in cohort_speakers(meeting, pool, qc).items():
         spk = key.split("/", 1)[1]
         E = np.concatenate([(z := _load(cdir, m.id, "enroll"))["emb"][z["speaker"] == spk] for m in ms])
         if not len(E):
@@ -343,11 +344,13 @@ class Prepared:
     roster_sets: dict[str, set[str]]
 
 
-def prepare_scores(meetings: list[Meeting], pool: list[Meeting], cdir: Path, top_n: int) -> list[Prepared]:
+def prepare_scores(meetings: list[Meeting], pool: list[Meeting], cdir: Path, top_n: int,
+                   qc: dict | None = None) -> list[Prepared]:
     out = []
     for m in meetings:
-        models = enrollment_models(m, pool, cdir)
-        names, S = score_windows(_load(cdir, m.id, "test")["emb"], models, cohort_vectors(m, pool, cdir, models), top_n)
+        models = enrollment_models(m, pool, cdir, qc)
+        names, S = score_windows(_load(cdir, m.id, "test")["emb"], models,
+                                 cohort_vectors(m, pool, cdir, models, qc), top_n)
         out.append(Prepared(m, _load(cdir, m.id, "test"), names, S, rosters(m, names)))
     return out
 
@@ -409,6 +412,7 @@ def main(argv=None) -> int:
     ap.add_argument("--thetas", type=float, nargs="+", default=[0, 0.5, 1, 1.5, 2, 2.5, 3, 4])
     ap.add_argument("--penalties", type=float, nargs="+", default=[0, 1, 2, 4, 8, 16])
     ap.add_argument("--embed-only", action="store_true")
+    ap.add_argument("--enroll-qc", action="store_true", help="apply bench/datasets/qc/<dataset>.json")
     a = ap.parse_args(argv)
 
     os.environ.setdefault("PYANNOTE_METRICS_ENABLED", "0")
@@ -429,8 +433,9 @@ def main(argv=None) -> int:
     if a.tune_split:
         splits.insert(0, (a.tune_dataset or a.dataset, a.tune_split))
     pools = {}
+    qcs = {ds: load_qc(ds) if a.enroll_qc else None for ds, _ in splits}
     for ds, sp in splits:
-        pool = load_meetings(ds, sp)
+        pool = load_meetings(ds, sp, qc=qcs[ds])
         pools[(ds, sp)] = pool
         cdir = cache_dir(ds, model_id, wp)
         t0 = time.time()
@@ -445,7 +450,7 @@ def main(argv=None) -> int:
         dp = DecodeParams(**json.loads(a.params.read_text())["decode"])
     elif a.tune_split:
         ds, sp = splits[0]
-        prep = prepare_scores(pools[(ds, sp)], pools[(ds, sp)], cache_dir(ds, model_id, wp), dp.top_n)
+        prep = prepare_scores(pools[(ds, sp)], pools[(ds, sp)], cache_dir(ds, model_id, wp), dp.top_n, qcs[ds])
         dp, grid = tune(prep, wp, a.thetas, a.penalties, log)
         log(f"tuned on {ds}/{sp}: θ={dp.theta:g} λ={dp.penalty:g}")
     if a.theta is not None or a.penalty is not None:
@@ -453,7 +458,7 @@ def main(argv=None) -> int:
                           penalty=dp.penalty if a.penalty is None else a.penalty)
 
     pool = pools[(a.dataset, a.split)]
-    prep = prepare_scores(pool, pool, cache_dir(a.dataset, model_id, wp), dp.top_n)
+    prep = prepare_scores(pool, pool, cache_dir(a.dataset, model_id, wp), dp.top_n, qcs[a.dataset])
     for name, d in (("b0", dp), ("b0-argmax", DecodeParams(theta=dp.theta, penalty=0.0))):
         write_system(prep, d, wp, a.out / name / "system")
     (a.out / "b0-params.json").write_text(json.dumps(
@@ -462,7 +467,7 @@ def main(argv=None) -> int:
          "timing": timing}, indent=2) + "\n")
     from .. import run as bench_run
     for name in ("b0", "b0-argmax"):
-        bench_run.main(["--dataset", a.dataset, "--split", a.split,
+        bench_run.main(["--dataset", a.dataset, "--split", a.split, *(["--enroll-qc"] if a.enroll_qc else []),
                         "--system", str(a.out / name / "system"), "--out", str(a.out / name)])
     log("done")
     return 0
